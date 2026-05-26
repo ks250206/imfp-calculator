@@ -11,6 +11,8 @@ pub fn map_key_event(event: KeyEvent, state: &mut KeyInputState, mode: Mode) -> 
     if mode == Mode::Editing {
         return match event.code {
             KeyCode::Esc => Some(Action::Escape),
+            KeyCode::Tab => Some(Action::NextPane),
+            KeyCode::BackTab => Some(Action::PreviousPane),
             KeyCode::Enter => Some(Action::ConfirmOrEdit),
             KeyCode::Backspace => Some(Action::Backspace),
             KeyCode::Char(ch) => Some(Action::InputChar(ch)),
@@ -59,7 +61,8 @@ pub fn map_key_event(event: KeyEvent, state: &mut KeyInputState, mode: Mode) -> 
         KeyCode::Char('q') => Some(Action::Quit),
         KeyCode::Esc => Some(Action::Escape),
         KeyCode::Enter => Some(Action::ConfirmOrEdit),
-        KeyCode::Char('i') | KeyCode::Char('a') => Some(Action::StartEdit),
+        KeyCode::Char('i') => Some(Action::StartInsertBefore),
+        KeyCode::Char('a') => Some(Action::StartInsertAfter),
         KeyCode::Char('x') => Some(Action::ClearCurrentField),
         KeyCode::Char('r') => Some(Action::Recalculate),
         KeyCode::Char(':') => Some(Action::StartCommand),
@@ -131,8 +134,8 @@ mod tests {
             (KeyCode::Char('?'), Some(Action::ToggleHelp)),
             (KeyCode::Char('q'), Some(Action::Quit)),
             (KeyCode::Enter, Some(Action::ConfirmOrEdit)),
-            (KeyCode::Char('i'), Some(Action::StartEdit)),
-            (KeyCode::Char('a'), Some(Action::StartEdit)),
+            (KeyCode::Char('i'), Some(Action::StartInsertBefore)),
+            (KeyCode::Char('a'), Some(Action::StartInsertAfter)),
             (KeyCode::Char('x'), Some(Action::ClearCurrentField)),
             (KeyCode::Char('r'), Some(Action::Recalculate)),
             (KeyCode::Char(':'), Some(Action::StartCommand)),
@@ -151,9 +154,11 @@ mod tests {
         let mut state = KeyInputState::default();
 
         let action = map_key_event(key(KeyCode::Char('1')), &mut state, Mode::Editing);
+        let tab = map_key_event(key(KeyCode::Tab), &mut state, Mode::Editing);
         let enter = map_key_event(key(KeyCode::Enter), &mut state, Mode::Editing);
 
         assert_eq!(action, Some(Action::InputChar('1')));
+        assert_eq!(tab, Some(Action::NextPane));
         assert_eq!(enter, Some(Action::ConfirmOrEdit));
     }
 }

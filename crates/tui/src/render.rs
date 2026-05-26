@@ -198,28 +198,50 @@ fn render_energy(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
 }
 
 fn render_result(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
+    let visible_rows = area.height.saturating_sub(3) as usize;
     let rows = state
         .sweep
         .as_ref()
         .map(|sweep| {
+            let start = if visible_rows == 0 {
+                0
+            } else {
+                state
+                    .selected_row
+                    .min(sweep.points.len().saturating_sub(1))
+                    .saturating_sub(visible_rows.saturating_sub(1))
+            };
             sweep
                 .points
                 .iter()
-                .take(8)
+                .enumerate()
+                .skip(start)
+                .take(visible_rows)
                 .map(|point| {
-                    Row::new(vec![
-                        format!("{:.4}", point.electron_energy_e_v),
-                        format!("{:.6}", point.imfp_nm),
-                    ])
+                    let (index, point) = point;
+                    let row = Row::new(vec![
+                        format!("{index:>5}"),
+                        format!("{:>14.4}", point.electron_energy_e_v),
+                        format!("{:>14.6}", point.imfp_nm),
+                    ]);
+                    if index == state.selected_row {
+                        row.style(Style::default().fg(Color::Yellow))
+                    } else {
+                        row
+                    }
                 })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
     let table = Table::new(
         rows,
-        [Constraint::Percentage(50), Constraint::Percentage(50)],
+        [
+            Constraint::Length(7),
+            Constraint::Length(16),
+            Constraint::Length(16),
+        ],
     )
-    .header(Row::new(vec!["E / eV", "IMFP / nm"]))
+    .header(Row::new(vec!["index", "E / eV", "IMFP / nm"]))
     .block(block(Pane::ResultSeries, state));
     frame.render_widget(table, area);
 }
@@ -374,7 +396,7 @@ fn set_edit_cursor(frame: &mut Frame<'_>, state: &AppState, area: Rect, pane: Pa
     let max_x = area.right().saturating_sub(2);
     let x = inner_x
         .saturating_add(prefix_len)
-        .saturating_add(state.edit_buffer.chars().count() as u16)
+        .saturating_add(state.edit_cursor as u16)
         .min(max_x);
     let y = inner_y.saturating_add(row);
     if y < area.bottom().saturating_sub(1) {
@@ -383,7 +405,7 @@ fn set_edit_cursor(frame: &mut Frame<'_>, state: &AppState, area: Rect, pane: Pa
 }
 
 fn edit_field_location(state: &AppState, pane: Pane) -> Option<(u16, u16)> {
-    if state.mode != Mode::Editing || state.focused_pane != pane {
+    if state.focused_pane != pane {
         return None;
     }
     match pane {
@@ -793,6 +815,7 @@ mod tests {
         state.focused_pane = Pane::MaterialInput;
         state.selected_material_field = MaterialField::Density;
         state.edit_buffer = "123".to_string();
+        state.edit_cursor = 3;
 
         let result = terminal.draw(|frame| render(frame, &state));
 
@@ -800,6 +823,56 @@ mod tests {
         terminal
             .backend_mut()
             .assert_cursor_position(Position { x: 15, y: 3 });
+    }
+
+    #[test]
+    fn normal_mode_shows_cursor_on_editable_field() {
+        let backend = TestBackend::new(120, 40);
+        let terminal = Terminal::new(backend);
+        let Ok(mut terminal) = terminal else {
+            unreachable!("test backend should be constructible");
+        };
+        let mut state = AppState::new(None, 50.0, 2000.0);
+        state.focused_pane = Pane::MaterialInput;
+        state.selected_material_field = MaterialField::Name;
+        state.edit_cursor = 1;
+
+        let result = terminal.draw(|frame| render(frame, &state));
+
+        assert!(result.is_ok());
+        terminal
+            .backend_mut()
+            .assert_cursor_position(Position { x: 10, y: 2 });
+    }
+
+    #[test]
+    fn result_table_can_scroll_to_last_sweep_point() {
+        let backend = TestBackend::new(120, 40);
+        let terminal = Terminal::new(backend);
+        let Ok(mut terminal) = terminal else {
+            unreachable!("test backend should be constructible");
+        };
+        let mut state = AppState::new(None, 50.0, 2000.0);
+        state.focused_pane = Pane::ResultSeries;
+        state.selected_row = state
+            .sweep
+            .as_ref()
+            .map(|sweep| sweep.points.len().saturating_sub(1))
+            .unwrap_or(0);
+
+        let result = terminal.draw(|frame| render(frame, &state));
+
+        assert!(result.is_ok());
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("  199"));
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .any(|cell| cell.fg == Color::Yellow && cell.symbol() == "1")
+        );
     }
 
     #[test]

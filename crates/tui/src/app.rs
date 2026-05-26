@@ -159,6 +159,7 @@ pub struct AppState {
     pub selected_material_field: MaterialField,
     pub selected_energy_field: EnergyField,
     pub edit_buffer: String,
+    pub edit_cursor: usize,
     pub should_quit: bool,
 }
 
@@ -178,6 +179,8 @@ pub enum Action {
     StartSearch,
     ToggleHelp,
     StartEdit,
+    StartInsertBefore,
+    StartInsertAfter,
     InputChar(char),
     Backspace,
     ClearCurrentField,
@@ -235,6 +238,7 @@ impl AppState {
             selected_material_field: MaterialField::Preset,
             selected_energy_field: EnergyField::Source,
             edit_buffer: String::new(),
+            edit_cursor: 0,
             should_quit: false,
         };
         recalculate(&mut state);
@@ -278,10 +282,11 @@ pub fn reduce(mut state: AppState, action: Action) -> AppState {
         Action::Focus(pane) => {
             if state.mode == Mode::Normal {
                 state.focused_pane = pane;
+                reset_cursor_for_current_field(&mut state);
             }
         }
-        Action::NextPane => next_focus_or_field(&mut state, 1),
-        Action::PreviousPane => next_focus_or_field(&mut state, -1),
+        Action::NextPane => cycle_pane_or_commit_then_cycle(&mut state, 1),
+        Action::PreviousPane => cycle_pane_or_commit_then_cycle(&mut state, -1),
         Action::MoveLeft => move_horizontal(&mut state, -1),
         Action::MoveRight => move_horizontal(&mut state, 1),
         Action::MoveDown => move_down_or_field(&mut state, 1),
@@ -304,15 +309,16 @@ pub fn reduce(mut state: AppState, action: Action) -> AppState {
                 Mode::Help
             };
         }
-        Action::StartEdit => start_edit(&mut state),
+        Action::StartEdit | Action::StartInsertBefore => start_edit(&mut state, InsertMode::Before),
+        Action::StartInsertAfter => start_edit(&mut state, InsertMode::After),
         Action::InputChar(ch) => {
             if state.mode == Mode::Editing {
-                state.edit_buffer.push(ch);
+                insert_char(&mut state, ch);
             }
         }
         Action::Backspace => {
             if state.mode == Mode::Editing {
-                state.edit_buffer.pop();
+                backspace(&mut state);
             }
         }
         Action::ConfirmOrEdit => confirm_or_edit(&mut state),
@@ -320,6 +326,7 @@ pub fn reduce(mut state: AppState, action: Action) -> AppState {
         Action::Escape => {
             state.mode = Mode::Normal;
             state.edit_buffer.clear();
+            reset_cursor_for_current_field(&mut state);
         }
         Action::Recalculate => recalculate(&mut state),
         Action::StartCommand => state.mode = Mode::Command,
@@ -352,14 +359,14 @@ fn cycle_pane(state: &mut AppState, direction: isize) {
     let len = Pane::ORDER.len() as isize;
     let next = (current as isize + direction).rem_euclid(len) as usize;
     state.focused_pane = Pane::ORDER[next];
+    reset_cursor_for_current_field(state);
 }
 
-fn next_focus_or_field(state: &mut AppState, direction: isize) {
-    match state.focused_pane {
-        Pane::MaterialInput if state.mode == Mode::Normal => cycle_material_field(state, direction),
-        Pane::EnergySweep if state.mode == Mode::Normal => cycle_energy_field(state, direction),
-        _ => cycle_pane(state, direction),
+fn cycle_pane_or_commit_then_cycle(state: &mut AppState, direction: isize) {
+    if state.mode == Mode::Editing {
+        commit_edit(state);
     }
+    cycle_pane(state, direction);
 }
 
 fn move_horizontal(state: &mut AppState, direction: isize) {
@@ -367,6 +374,10 @@ fn move_horizontal(state: &mut AppState, direction: isize) {
         match state.focused_pane {
             Pane::MaterialInput if state.selected_material_field == MaterialField::Preset => {
                 cycle_material_preset(state, direction);
+                return;
+            }
+            Pane::MaterialInput if current_field_is_editable(state) => {
+                move_edit_cursor(state, direction);
                 return;
             }
             Pane::EnergySweep => match state.selected_energy_field {
@@ -387,19 +398,17 @@ fn move_horizontal(state: &mut AppState, direction: isize) {
                     recalculate(state);
                     return;
                 }
+                _ if current_field_is_editable(state) => {
+                    move_edit_cursor(state, direction);
+                    return;
+                }
                 _ => {}
             },
             _ => {}
         }
     }
 
-    match (state.focused_pane, direction) {
-        (Pane::MaterialInput | Pane::EnergySweep | Pane::ResultSeries, 1) => {
-            state.focused_pane = Pane::Graph;
-        }
-        (Pane::Graph, -1) => state.focused_pane = Pane::MaterialInput,
-        _ => move_selection(state, direction),
-    }
+    move_selection(state, direction);
 }
 
 fn move_down_or_field(state: &mut AppState, direction: isize) {
@@ -473,6 +482,7 @@ fn cycle_material_field(state: &mut AppState, direction: isize) {
     let len = MaterialField::ORDER.len() as isize;
     let next = (current as isize + direction).rem_euclid(len) as usize;
     state.selected_material_field = MaterialField::ORDER[next];
+    reset_cursor_for_current_field(state);
 }
 
 fn cycle_energy_field(state: &mut AppState, direction: isize) {
@@ -483,6 +493,7 @@ fn cycle_energy_field(state: &mut AppState, direction: isize) {
     let len = EnergyField::ORDER.len() as isize;
     let next = (current as isize + direction).rem_euclid(len) as usize;
     state.selected_energy_field = EnergyField::ORDER[next];
+    reset_cursor_for_current_field(state);
 }
 
 fn cycle_material_preset(state: &mut AppState, direction: isize) {
@@ -543,12 +554,25 @@ fn cycle_spacing(state: &mut AppState) {
     recalculate(state);
 }
 
-fn start_edit(state: &mut AppState) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InsertMode {
+    Before,
+    After,
+}
+
+fn start_edit(state: &mut AppState, insert_mode: InsertMode) {
     if !current_field_is_editable(state) {
         return;
     }
     state.mode = Mode::Editing;
     state.edit_buffer = current_field_text(state);
+    clamp_edit_cursor(state);
+    if insert_mode == InsertMode::After {
+        state.edit_cursor = state
+            .edit_cursor
+            .saturating_add(1)
+            .min(state.edit_buffer.chars().count());
+    }
 }
 
 fn confirm_or_edit(state: &mut AppState) {
@@ -567,9 +591,9 @@ fn confirm_or_edit(state: &mut AppState) {
                     state.energy.allow_extrapolate = !state.energy.allow_extrapolate;
                     recalculate(state);
                 }
-                _ => start_edit(state),
+                _ => start_edit(state, InsertMode::Before),
             },
-            _ => start_edit(state),
+            _ => start_edit(state, InsertMode::Before),
         }
     }
 }
@@ -644,6 +668,7 @@ fn commit_edit(state: &mut AppState) {
 
     state.mode = Mode::Normal;
     state.edit_buffer.clear();
+    reset_cursor_for_current_field(state);
     if accepted {
         recalculate(state);
     } else {
@@ -690,6 +715,63 @@ fn current_field_text(state: &AppState) -> String {
         },
         _ => String::new(),
     }
+}
+
+fn insert_char(state: &mut AppState, ch: char) {
+    let index = byte_index_at_char(&state.edit_buffer, state.edit_cursor);
+    state.edit_buffer.insert(index, ch);
+    state.edit_cursor += 1;
+}
+
+fn backspace(state: &mut AppState) {
+    if state.edit_cursor == 0 {
+        return;
+    }
+    let start = byte_index_at_char(&state.edit_buffer, state.edit_cursor - 1);
+    let end = byte_index_at_char(&state.edit_buffer, state.edit_cursor);
+    state.edit_buffer.replace_range(start..end, "");
+    state.edit_cursor -= 1;
+}
+
+fn move_edit_cursor(state: &mut AppState, direction: isize) {
+    let len = active_field_text(state).chars().count();
+    if direction < 0 {
+        state.edit_cursor = state.edit_cursor.saturating_sub(direction.unsigned_abs());
+    } else {
+        state.edit_cursor = state
+            .edit_cursor
+            .saturating_add(direction as usize)
+            .min(len);
+    }
+}
+
+fn reset_cursor_for_current_field(state: &mut AppState) {
+    state.edit_cursor = if current_field_is_editable(state) {
+        active_field_text(state).chars().count()
+    } else {
+        0
+    };
+}
+
+fn clamp_edit_cursor(state: &mut AppState) {
+    state.edit_cursor = state
+        .edit_cursor
+        .min(active_field_text(state).chars().count());
+}
+
+fn active_field_text(state: &AppState) -> String {
+    if state.mode == Mode::Editing {
+        state.edit_buffer.clone()
+    } else {
+        current_field_text(state)
+    }
+}
+
+fn byte_index_at_char(text: &str, char_index: usize) -> usize {
+    text.char_indices()
+        .nth(char_index)
+        .map(|(index, _)| index)
+        .unwrap_or(text.len())
 }
 
 fn current_material_preset_label(state: &AppState) -> &str {
@@ -895,7 +977,7 @@ mod tests {
     #[test]
     fn edit_search_help_command_and_escape_update_modes() {
         let state = AppState::new(None, 50.0, 2000.0);
-        let state = reduce(state, Action::NextPane);
+        let state = reduce(state, Action::MoveDown);
 
         let state = reduce(state, Action::StartEdit);
         assert_eq!(state.mode, Mode::Editing);
@@ -919,8 +1001,8 @@ mod tests {
     #[test]
     fn focus_actions_are_ignored_while_not_in_normal_mode() {
         let state = AppState::new(None, 50.0, 2000.0);
-        let state = reduce(state, Action::NextPane);
-        let state = reduce(state, Action::StartEdit);
+        let state = reduce(state, Action::MoveDown);
+        let state = reduce(state, Action::StartInsertBefore);
         let state = reduce(state, Action::Focus(Pane::Graph));
 
         assert_eq!(state.focused_pane, Pane::MaterialInput);
@@ -965,32 +1047,43 @@ mod tests {
     fn clearing_current_field_uses_pane_specific_defaults() {
         let state = AppState::new(None, 50.0, 2000.0);
         let state = reduce(state, Action::Focus(Pane::MaterialInput));
-        let state = reduce(state, Action::PreviousPane);
+        let state = reduce(state, Action::MoveUp);
         let state = reduce(state, Action::ClearCurrentField);
         assert_eq!(state.material.band_gap_e_v, 0.0);
 
         let state = reduce(state, Action::Focus(Pane::EnergySweep));
-        let state = reduce(state, Action::NextPane);
+        let state = reduce(state, Action::MoveDown);
         let state = reduce(state, Action::ClearCurrentField);
         assert_eq!(state.energy.electron_energy_e_v, 50.0);
     }
 
     #[test]
-    fn tab_moves_between_fields_inside_input_panes() {
+    fn tab_always_moves_between_panes() {
         let state = AppState::new(None, 50.0, 2000.0);
 
         let state = reduce(state, Action::NextPane);
 
+        assert_eq!(state.focused_pane, Pane::EnergySweep);
+        assert_eq!(state.selected_material_field, MaterialField::Preset);
+    }
+
+    #[test]
+    fn jk_moves_between_fields_inside_input_panes() {
+        let state = AppState::new(None, 50.0, 2000.0);
+
+        let state = reduce(state, Action::MoveDown);
+        let state = reduce(state, Action::MoveUp);
+
         assert_eq!(state.focused_pane, Pane::MaterialInput);
-        assert_eq!(state.selected_material_field, MaterialField::Name);
+        assert_eq!(state.selected_material_field, MaterialField::Preset);
     }
 
     #[test]
     fn inline_edit_updates_material_value_and_marks_custom_from_preset() {
         let state = AppState::new(None, 50.0, 2000.0);
-        let state = reduce(state, Action::NextPane);
-        let state = reduce(state, Action::NextPane);
-        let state = reduce(state, Action::StartEdit);
+        let state = reduce(state, Action::MoveDown);
+        let state = reduce(state, Action::MoveDown);
+        let state = reduce(state, Action::StartInsertAfter);
         let state = reduce(state, Action::InputChar('9'));
         let state = reduce(state, Action::ConfirmOrEdit);
 
@@ -998,6 +1091,46 @@ mod tests {
         assert_eq!(state.material.material_name, "Custom from Si");
         assert!(state.material.preset_index.is_none());
         assert_eq!(state.material.density_g_cm3, 2.32969);
+    }
+
+    #[test]
+    fn normal_hl_moves_edit_cursor_on_editable_fields() {
+        let state = AppState::new(None, 50.0, 2000.0);
+        let state = reduce(state, Action::MoveDown);
+        let end = state.edit_cursor;
+
+        let state = reduce(state, Action::MoveLeft);
+        let state = reduce(state, Action::StartInsertBefore);
+        let state = reduce(state, Action::InputChar('X'));
+        let state = reduce(state, Action::ConfirmOrEdit);
+
+        assert_eq!(end, 2);
+        assert_eq!(state.material.material_name, "SXi");
+    }
+
+    #[test]
+    fn a_enters_insert_mode_after_current_cursor_position() {
+        let state = AppState::new(None, 50.0, 2000.0);
+        let state = reduce(state, Action::MoveDown);
+        let state = reduce(state, Action::MoveLeft);
+        let state = reduce(state, Action::StartInsertAfter);
+        let state = reduce(state, Action::InputChar('X'));
+        let state = reduce(state, Action::ConfirmOrEdit);
+
+        assert_eq!(state.material.material_name, "SiX");
+    }
+
+    #[test]
+    fn tab_commits_edit_and_moves_pane() {
+        let state = AppState::new(None, 50.0, 2000.0);
+        let state = reduce(state, Action::MoveDown);
+        let state = reduce(state, Action::StartInsertAfter);
+        let state = reduce(state, Action::InputChar('X'));
+        let state = reduce(state, Action::NextPane);
+
+        assert_eq!(state.mode, Mode::Normal);
+        assert_eq!(state.focused_pane, Pane::EnergySweep);
+        assert_eq!(state.material.material_name, "SiX");
     }
 
     #[test]
@@ -1010,8 +1143,8 @@ mod tests {
         assert_eq!(state.energy.source, EnergySource::Xray(1));
         assert_eq!(state.energy.electron_energy_e_v, 1253.6);
 
-        let state = reduce(state, Action::NextPane);
-        let state = reduce(state, Action::NextPane);
+        let state = reduce(state, Action::MoveDown);
+        let state = reduce(state, Action::MoveDown);
         let state = reduce(state, Action::MoveRight);
         assert_eq!(state.energy.range_mode, RangeMode::Auto);
         assert_eq!(state.energy.energy_min_e_v, 10.0);
@@ -1022,11 +1155,11 @@ mod tests {
     fn manual_range_edit_switches_range_mode() {
         let state = AppState::new(None, 50.0, 2000.0);
         let state = reduce(state, Action::Focus(Pane::EnergySweep));
-        let state = reduce(state, Action::NextPane);
-        let state = reduce(state, Action::NextPane);
+        let state = reduce(state, Action::MoveDown);
+        let state = reduce(state, Action::MoveDown);
         let state = reduce(state, Action::MoveRight);
-        let state = reduce(state, Action::NextPane);
-        let state = reduce(state, Action::StartEdit);
+        let state = reduce(state, Action::MoveDown);
+        let state = reduce(state, Action::StartInsertAfter);
         let state = reduce(state, Action::InputChar('0'));
         let state = reduce(state, Action::ConfirmOrEdit);
 
