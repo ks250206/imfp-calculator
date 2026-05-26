@@ -13,6 +13,7 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui_image::picker::Picker;
 use tpp2m_core::Tpp2mInput;
 
 pub use app::{Action, AppState, Mode, Pane, reduce};
@@ -53,10 +54,12 @@ fn run_loop(
 ) -> Result<(), String> {
     let mut state = AppState::new(initial_input, energy_min_e_v, energy_max_e_v);
     let mut key_state = keymap::KeyInputState::default();
+    let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::from_fontsize((10, 20)));
+    let mut graph_image = render::GraphImageState::new(picker);
 
     loop {
         terminal
-            .draw(|frame| render::render(frame, &state))
+            .draw(|frame| render::render_with_graph_image(frame, &state, &mut graph_image))
             .map_err(|error| error.to_string())?;
 
         if state.should_quit {

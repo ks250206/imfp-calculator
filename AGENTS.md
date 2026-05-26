@@ -35,7 +35,7 @@
 ## 予定ワークスペース構成
 
 ```text
-tpp2m/
+imfp-calculator/
 ├── AGENTS.md
 ├── Cargo.toml
 ├── crates/

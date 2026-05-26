@@ -3,7 +3,7 @@
 ## 予定ツリー
 
 ```text
-tpp2m/
+imfp-calculator/
 ├── Cargo.toml
 ├── AGENTS.md
 ├── crates/

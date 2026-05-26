@@ -1,18 +1,83 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
+
 use ratatui::Frame;
-use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
+use ratatui_image::picker::Picker;
+use ratatui_image::protocol::Protocol;
+use ratatui_image::{Image as RatatuiImage, Resize};
 
 use crate::app::{AppState, EnergyField, MaterialField, Mode, Pane};
 
+pub struct GraphImageState {
+    picker: Picker,
+    cache: Option<GraphImageCache>,
+    pending_key: Option<GraphImageKey>,
+    failed_key: Option<GraphImageKey>,
+    result_sender: Sender<GraphImageRenderResult>,
+    result_receiver: Receiver<GraphImageRenderResult>,
+}
+
+struct GraphImageCache {
+    key: GraphImageKey,
+    protocol: Protocol,
+}
+
+struct GraphImageRenderResult {
+    key: GraphImageKey,
+    image: Result<image::DynamicImage, String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GraphImageKey {
+    width: u16,
+    height: u16,
+    points_len: usize,
+    points_hash: u64,
+    marker_x: Option<u64>,
+}
+
+impl GraphImageState {
+    pub fn new(picker: Picker) -> Self {
+        let (result_sender, result_receiver) = mpsc::channel();
+        Self {
+            picker,
+            cache: None,
+            pending_key: None,
+            failed_key: None,
+            result_sender,
+            result_receiver,
+        }
+    }
+}
+
 pub fn render(frame: &mut Frame<'_>, state: &AppState) {
+    render_internal(frame, state, None);
+}
+
+pub fn render_with_graph_image(
+    frame: &mut Frame<'_>,
+    state: &AppState,
+    graph_image: &mut GraphImageState,
+) {
+    render_internal(frame, state, Some(graph_image));
+}
+
+fn render_internal(
+    frame: &mut Frame<'_>,
+    state: &AppState,
+    graph_image: Option<&mut GraphImageState>,
+) {
     let area = frame.area();
     if area.width < 90 {
-        render_stacked(frame, state, area);
+        render_stacked(frame, state, area, graph_image);
     } else {
-        render_split(frame, state, area);
+        render_split(frame, state, area, graph_image);
     }
 }
 
@@ -20,7 +85,12 @@ pub fn pane_titles() -> Vec<&'static str> {
     Pane::ORDER.iter().map(|pane| pane.title()).collect()
 }
 
-fn render_split(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
+fn render_split(
+    frame: &mut Frame<'_>,
+    state: &AppState,
+    area: Rect,
+    graph_image: Option<&mut GraphImageState>,
+) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
@@ -43,11 +113,16 @@ fn render_split(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
     render_energy(frame, state, left[1]);
     render_result(frame, state, left[2]);
     render_help(frame, state, left[3]);
-    render_graph(frame, state, right[0]);
+    render_graph(frame, state, right[0], graph_image);
     render_messages(frame, state, right[1]);
 }
 
-fn render_stacked(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
+fn render_stacked(
+    frame: &mut Frame<'_>,
+    state: &AppState,
+    area: Rect,
+    graph_image: Option<&mut GraphImageState>,
+) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -60,7 +135,7 @@ fn render_stacked(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
         .split(area);
     render_material(frame, state, rows[0]);
     render_energy(frame, state, rows[1]);
-    render_graph(frame, state, rows[2]);
+    render_graph(frame, state, rows[2], graph_image);
     render_result(frame, state, rows[3]);
     render_help(frame, state, rows[4]);
 }
@@ -247,14 +322,19 @@ fn render_result(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
     frame.render_widget(table, area);
 }
 
-fn render_graph(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
-    let Some(graph) = &state.graph else {
+fn render_graph(
+    frame: &mut Frame<'_>,
+    state: &AppState,
+    area: Rect,
+    graph_image: Option<&mut GraphImageState>,
+) {
+    if state.graph.is_none() {
         frame.render_widget(
             Paragraph::new("graph unavailable").block(block(Pane::Graph, state)),
             area,
         );
         return;
-    };
+    }
     let outer = graph_block(state);
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
@@ -262,20 +342,49 @@ fn render_graph(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
         Block::default().style(Style::default().bg(Color::White)),
         inner,
     );
-    draw_graph_buffer(
-        frame.buffer_mut(),
-        inner,
-        &graph.points_log10,
-        &graph.x_axis_label,
-        &graph.y_axis_label,
-        graph_marker(state),
-    );
+    if let Some(graph_image) = graph_image {
+        let _ = render_graph_image(frame, state, inner, graph_image);
+    }
 }
 
-fn render_help(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
-    let text = "1-4 focus | Tab panes | hjkl move | gg/G bounds | / search | ? help | q quit";
+fn render_graph_image(
+    frame: &mut Frame<'_>,
+    state: &AppState,
+    area: Rect,
+    graph_image: &mut GraphImageState,
+) -> Result<(), String> {
+    let Some(graph) = &state.graph else {
+        return Err("graph unavailable".to_string());
+    };
+    if area.width < 20 || area.height < 8 {
+        return Err("graph area too small".to_string());
+    }
+    let key = graph_image_key(state, area)?;
+    receive_graph_image_results(graph_image);
+    if graph_image
+        .cache
+        .as_ref()
+        .is_some_and(|cache| cache.key == key)
+    {
+        let Some(cache) = &graph_image.cache else {
+            return Err("image cache unavailable".to_string());
+        };
+        frame.render_widget(RatatuiImage::new(&cache.protocol), area);
+        return Ok(());
+    }
+    if graph_image.failed_key == Some(key) {
+        return Err("image render failed".to_string());
+    }
+    if graph_image.pending_key != Some(key) {
+        spawn_graph_image_render(graph_image, key, area, graph)?;
+    }
+    Err("image render pending".to_string())
+}
+
+fn render_help(frame: &mut Frame<'_>, _state: &AppState, area: Rect) {
+    let text = "1-5 focus | Tab panes | hjkl move | gg/G bounds | / search | ? help | q quit";
     frame.render_widget(
-        Paragraph::new(text).block(block(Pane::HelpLog, state)),
+        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Help")),
         area,
     );
 }
@@ -289,7 +398,7 @@ fn render_messages(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
         .map(|message| Line::from(message.text.clone()))
         .collect();
     frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("Log")),
+        Paragraph::new(lines).block(block(Pane::HelpLog, state)),
         area,
     );
 }
@@ -302,9 +411,14 @@ fn block(pane: Pane, state: &AppState) -> Block<'static> {
     } else {
         Style::default()
     };
+    let title = if state.focused_pane == pane && state.mode == Mode::Visual {
+        format!("{} [VISUAL]", pane.title())
+    } else {
+        pane.title().to_string()
+    };
     Block::default()
         .borders(Borders::ALL)
-        .title(pane.title())
+        .title(title)
         .border_style(style)
 }
 
@@ -438,49 +552,261 @@ fn edit_field_location(state: &AppState, pane: Pane) -> Option<(u16, u16)> {
     }
 }
 
-fn superscript_tick(value: f64) -> String {
-    let rounded = value.round();
-    if (value - rounded).abs() > 0.25 {
-        String::new()
-    } else {
-        format!("10{}", to_superscript(rounded as i32))
+fn graph_marker(state: &AppState) -> Option<f64> {
+    (state.energy.electron_energy_e_v > 0.0).then_some(state.energy.electron_energy_e_v.log10())
+}
+
+fn graph_image_key(state: &AppState, area: Rect) -> Result<GraphImageKey, String> {
+    let graph = state
+        .graph
+        .as_ref()
+        .ok_or_else(|| "graph unavailable".to_string())?;
+    if graph.points_log10.is_empty() {
+        return Err("graph points unavailable".to_string());
+    }
+    Ok(GraphImageKey {
+        width: area.width,
+        height: area.height,
+        points_len: graph.points_log10.len(),
+        points_hash: graph_points_hash(&graph.points_log10),
+        marker_x: graph_marker(state).map(f64::to_bits),
+    })
+}
+
+fn graph_points_hash(points: &[(f64, f64)]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for (x, y) in points {
+        x.to_bits().hash(&mut hasher);
+        y.to_bits().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn receive_graph_image_results(graph_image: &mut GraphImageState) {
+    while let Ok(result) = graph_image.result_receiver.try_recv() {
+        if graph_image.pending_key != Some(result.key) {
+            continue;
+        }
+        graph_image.pending_key = None;
+        match result.image {
+            Ok(image) => {
+                let protocol = graph_image.picker.new_protocol(
+                    image,
+                    Rect::new(0, 0, result.key.width, result.key.height),
+                    Resize::Fit(None),
+                );
+                match protocol {
+                    Ok(protocol) => {
+                        graph_image.failed_key = None;
+                        graph_image.cache = Some(GraphImageCache {
+                            key: result.key,
+                            protocol,
+                        });
+                    }
+                    Err(_) => {
+                        graph_image.failed_key = Some(result.key);
+                    }
+                }
+            }
+            Err(_) => {
+                graph_image.failed_key = Some(result.key);
+            }
+        }
     }
 }
 
-fn to_superscript(value: i32) -> String {
-    value
-        .to_string()
-        .chars()
-        .map(|ch| match ch {
-            '-' => '⁻',
-            '0' => '⁰',
-            '1' => '¹',
-            '2' => '²',
-            '3' => '³',
-            '4' => '⁴',
-            '5' => '⁵',
-            '6' => '⁶',
-            '7' => '⁷',
-            '8' => '⁸',
-            '9' => '⁹',
-            _ => ch,
+fn spawn_graph_image_render(
+    graph_image: &mut GraphImageState,
+    key: GraphImageKey,
+    area: Rect,
+    graph: &tpp2m_core::LogPlotData,
+) -> Result<(), String> {
+    let font_size = graph_image.picker.font_size();
+    let width = u32::from(area.width).saturating_mul(u32::from(font_size.0));
+    let height = u32::from(area.height).saturating_mul(u32::from(font_size.1));
+    let points = graph.points_log10.clone();
+    let x_axis_label = graph.x_axis_label.clone();
+    let y_axis_label = graph.y_axis_label.clone();
+    let marker_x_log10 = key.marker_x.map(f64::from_bits);
+    let result_sender = graph_image.result_sender.clone();
+    graph_image.pending_key = Some(key);
+    thread::Builder::new()
+        .name("tpp2m-tui-graph-render".to_string())
+        .spawn(move || {
+            let image = render_plot_image(
+                width,
+                height,
+                &points,
+                &x_axis_label,
+                &y_axis_label,
+                marker_x_log10,
+            );
+            let _ = result_sender.send(GraphImageRenderResult { key, image });
         })
-        .collect()
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
-fn major_ticks(bounds: [f64; 2]) -> Vec<f64> {
+fn render_plot_image(
+    width: u32,
+    height: u32,
+    points: &[(f64, f64)],
+    x_axis_label: &str,
+    y_axis_label: &str,
+    marker_x_log10: Option<f64>,
+) -> Result<image::DynamicImage, String> {
+    use plotters::prelude as plt;
+    use plotters::prelude::{DrawingArea, IntoDrawingArea, IntoFont};
+    use plotters::style::Color as PlottersColor;
+    use plotters::style::text_anchor::{HPos, Pos, VPos};
+    use plotters::style::{FontTransform, IntoTextStyle, TextStyle};
+    use plotters_bitmap::BitMapBackend;
+
+    if width < 200 || height < 160 || points.len() < 2 {
+        return Err("image plot area too small".to_string());
+    }
+    let mut buffer = vec![255_u8; width as usize * height as usize * 3];
+    {
+        let root: DrawingArea<_, _> =
+            BitMapBackend::with_buffer(&mut buffer, (width, height)).into_drawing_area();
+        root.fill(&plt::WHITE).map_err(|error| error.to_string())?;
+        let x_bounds = bounds(points.iter().map(|(x, _)| *x));
+        let y_bounds = bounds(points.iter().map(|(_, y)| *y));
+
+        let plot = PlotPixels {
+            left: 76,
+            right: width as i32 - 28,
+            top: 24,
+            bottom: height as i32 - 72,
+            x_bounds,
+            y_bounds,
+        };
+        if plot.right <= plot.left + 16 || plot.bottom <= plot.top + 16 {
+            return Err("image plot area too small".to_string());
+        }
+
+        let axis_style = plt::BLACK.stroke_width(1);
+        let tick_style = plt::BLACK.stroke_width(1);
+        let red_style = plt::RED.stroke_width(3);
+        let marker_style = plt::BLUE.mix(0.7).stroke_width(2);
+
+        root.draw(&plt::PathElement::new(
+            vec![
+                (plot.left, plot.top),
+                (plot.right, plot.top),
+                (plot.right, plot.bottom),
+                (plot.left, plot.bottom),
+                (plot.left, plot.top),
+            ],
+            axis_style,
+        ))
+        .map_err(|error| error.to_string())?;
+
+        for tick in minor_log_ticks(x_bounds) {
+            let x = plot.x(tick);
+            draw_line(&root, [(x, plot.bottom), (x, plot.bottom - 7)], tick_style)?;
+            draw_line(&root, [(x, plot.top), (x, plot.top + 7)], tick_style)?;
+        }
+        for tick in minor_log_ticks(y_bounds) {
+            let y = plot.y(tick);
+            draw_line(&root, [(plot.left, y), (plot.left + 7, y)], tick_style)?;
+            draw_line(&root, [(plot.right, y), (plot.right - 7, y)], tick_style)?;
+        }
+        for exponent in major_log_tick_exponents(x_bounds) {
+            let x = plot.x(f64::from(exponent));
+            draw_line(&root, [(x, plot.bottom), (x, plot.bottom - 12)], tick_style)?;
+            draw_line(&root, [(x, plot.top), (x, plot.top + 12)], tick_style)?;
+            draw_power_tick_label(&root, x, plot.bottom + 18, exponent, TickLabelSide::Bottom)?;
+        }
+        for exponent in major_log_tick_exponents(y_bounds) {
+            let y = plot.y(f64::from(exponent));
+            draw_line(&root, [(plot.left, y), (plot.left + 12, y)], tick_style)?;
+            draw_line(&root, [(plot.right, y), (plot.right - 12, y)], tick_style)?;
+            draw_power_tick_label(&root, plot.left - 12, y, exponent, TickLabelSide::Left)?;
+        }
+
+        let axis_label_style = ("sans-serif", 18)
+            .into_text_style(&root)
+            .color(&plt::BLACK)
+            .pos(Pos::new(HPos::Center, VPos::Center));
+        root.draw_text(
+            x_axis_label,
+            &axis_label_style,
+            ((plot.left + plot.right) / 2, height as i32 - 24),
+        )
+        .map_err(|error| error.to_string())?;
+        let y_label_style = TextStyle::from(("sans-serif", 18).into_font())
+            .color(&plt::BLACK)
+            .pos(Pos::new(HPos::Center, VPos::Center))
+            .transform(FontTransform::Rotate270);
+        root.draw_text(
+            y_axis_label,
+            &y_label_style,
+            (22, (plot.top + plot.bottom) / 2),
+        )
+        .map_err(|error| error.to_string())?;
+
+        let series = points
+            .iter()
+            .filter(|(x, y)| x.is_finite() && y.is_finite())
+            .map(|(x, y)| (plot.x(*x), plot.y(*y)))
+            .collect::<Vec<_>>();
+        if series.len() >= 2 {
+            root.draw(&plt::PathElement::new(series, red_style))
+                .map_err(|error| error.to_string())?;
+        }
+
+        if let Some(marker_x_log10) = marker_x_log10
+            && marker_x_log10 >= x_bounds[0]
+            && marker_x_log10 <= x_bounds[1]
+        {
+            let x = plot.x(marker_x_log10);
+            draw_line(&root, [(x, plot.top), (x, plot.bottom)], marker_style)?;
+        }
+        root.present().map_err(|error| error.to_string())?;
+    }
+    let image = image::RgbImage::from_raw(width, height, buffer)
+        .ok_or_else(|| "invalid plot image buffer".to_string())?;
+    Ok(image::DynamicImage::ImageRgb8(image))
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PlotPixels {
+    left: i32,
+    right: i32,
+    top: i32,
+    bottom: i32,
+    x_bounds: [f64; 2],
+    y_bounds: [f64; 2],
+}
+
+impl PlotPixels {
+    fn x(self, value: f64) -> i32 {
+        let span = (self.x_bounds[1] - self.x_bounds[0]).max(f64::EPSILON);
+        let t = ((value - self.x_bounds[0]) / span).clamp(0.0, 1.0);
+        self.left + (t * f64::from(self.right - self.left)).round() as i32
+    }
+
+    fn y(self, value: f64) -> i32 {
+        let span = (self.y_bounds[1] - self.y_bounds[0]).max(f64::EPSILON);
+        let t = ((value - self.y_bounds[0]) / span).clamp(0.0, 1.0);
+        self.bottom - (t * f64::from(self.bottom - self.top)).round() as i32
+    }
+}
+
+fn major_log_tick_exponents(bounds: [f64; 2]) -> Vec<i32> {
     let start = bounds[0].ceil() as i32;
     let end = bounds[1].floor() as i32;
-    (start..=end).map(f64::from).collect()
+    (start..=end).collect()
 }
 
-fn minor_ticks(bounds: [f64; 2]) -> Vec<f64> {
+fn minor_log_ticks(bounds: [f64; 2]) -> Vec<f64> {
     let start = bounds[0].floor() as i32;
     let end = bounds[1].ceil() as i32;
     let mut ticks = Vec::new();
-    for power in start..=end {
+    for exponent in start..=end {
         for multiplier in 2..10 {
-            let tick = f64::from(power) + f64::from(multiplier).log10();
+            let tick = f64::from(exponent) + f64::from(multiplier).log10();
             if tick > bounds[0] && tick < bounds[1] {
                 ticks.push(tick);
             }
@@ -489,308 +815,50 @@ fn minor_ticks(bounds: [f64; 2]) -> Vec<f64> {
     ticks
 }
 
-fn draw_graph_buffer(
-    buffer: &mut Buffer,
-    area: Rect,
-    points: &[(f64, f64)],
-    x_axis_label: &str,
-    y_axis_label: &str,
-    marker_x_log10: Option<f64>,
-) {
-    buffer.set_style(area, Style::default().fg(Color::Black).bg(Color::White));
-    if area.width < 20 || area.height < 8 || points.len() < 2 {
-        return;
-    }
+fn draw_line<DB: plotters::prelude::DrawingBackend>(
+    root: &plotters::prelude::DrawingArea<DB, plotters::coord::Shift>,
+    points: [(i32, i32); 2],
+    style: plotters::style::ShapeStyle,
+) -> Result<(), String> {
+    root.draw(&plotters::prelude::PathElement::new(points, style))
+        .map_err(|error| error.to_string())
+}
 
-    let plot = Rect {
-        x: area.x.saturating_add(7),
-        y: area.y.saturating_add(2),
-        width: area.width.saturating_sub(10),
-        height: area.height.saturating_sub(5),
+#[derive(Clone, Copy, Debug)]
+enum TickLabelSide {
+    Bottom,
+    Left,
+}
+
+fn draw_power_tick_label<DB: plotters::prelude::DrawingBackend>(
+    root: &plotters::prelude::DrawingArea<DB, plotters::coord::Shift>,
+    x: i32,
+    y: i32,
+    exponent: i32,
+    side: TickLabelSide,
+) -> Result<(), String> {
+    use plotters::prelude as plt;
+    use plotters::prelude::IntoFont;
+    use plotters::style::text_anchor::{HPos, Pos, VPos};
+    use plotters::style::{IntoTextStyle, TextStyle};
+
+    let base_style = ("sans-serif", 15)
+        .into_text_style(root)
+        .color(&plt::BLACK)
+        .pos(Pos::new(HPos::Left, VPos::Top));
+    let exponent_style = TextStyle::from(("sans-serif", 10).into_font())
+        .color(&plt::BLACK)
+        .pos(Pos::new(HPos::Left, VPos::Top));
+    let exponent_text = exponent.to_string();
+    let label_width = 18 + exponent_text.chars().count() as i32 * 7;
+    let (base_x, base_y) = match side {
+        TickLabelSide::Bottom => (x - label_width / 2, y),
+        TickLabelSide::Left => (x - label_width, y - 8),
     };
-    if plot.width < 8 || plot.height < 4 {
-        return;
-    }
-
-    let x_bounds = bounds(points.iter().map(|(x, _)| *x));
-    let y_bounds = bounds(points.iter().map(|(_, y)| *y));
-    draw_plot_frame(buffer, plot);
-    draw_plot_ticks(buffer, plot, x_bounds, y_bounds);
-    draw_plot_labels(
-        buffer,
-        area,
-        plot,
-        x_bounds,
-        y_bounds,
-        x_axis_label,
-        y_axis_label,
-    );
-    if let Some(marker_x_log10) = marker_x_log10 {
-        draw_energy_marker(buffer, plot, x_bounds, marker_x_log10);
-    }
-    draw_plot_series(buffer, plot, x_bounds, y_bounds, points);
-}
-
-fn graph_marker(state: &AppState) -> Option<f64> {
-    (state.energy.electron_energy_e_v > 0.0).then_some(state.energy.electron_energy_e_v.log10())
-}
-
-fn draw_plot_frame(buffer: &mut Buffer, plot: Rect) {
-    let style = Style::default().fg(Color::Black).bg(Color::White);
-    let left = plot.x;
-    let right = plot.right().saturating_sub(1);
-    let top = plot.y;
-    let bottom = plot.bottom().saturating_sub(1);
-
-    for x in left.saturating_add(1)..right {
-        set_symbol(buffer, x, top, "─", style);
-        set_symbol(buffer, x, bottom, "─", style);
-    }
-    for y in top.saturating_add(1)..bottom {
-        set_symbol(buffer, left, y, "│", style);
-        set_symbol(buffer, right, y, "│", style);
-    }
-    set_symbol(buffer, left, top, "┌", style);
-    set_symbol(buffer, right, top, "┐", style);
-    set_symbol(buffer, left, bottom, "└", style);
-    set_symbol(buffer, right, bottom, "┘", style);
-}
-
-fn draw_plot_ticks(buffer: &mut Buffer, plot: Rect, x_bounds: [f64; 2], y_bounds: [f64; 2]) {
-    let style = Style::default().fg(Color::Black).bg(Color::White);
-    let left = plot.x;
-    let right = plot.right().saturating_sub(1);
-    let top = plot.y;
-    let bottom = plot.bottom().saturating_sub(1);
-
-    for x in minor_ticks(x_bounds) {
-        let col = x_to_col(x, x_bounds, plot);
-        set_symbol(buffer, col, top, "┬", style);
-        set_symbol(buffer, col, bottom, "┴", style);
-    }
-    for x in major_ticks(x_bounds) {
-        let col = x_to_col(x, x_bounds, plot);
-        set_symbol(buffer, col, top, "┬", style);
-        set_symbol(buffer, col, top.saturating_add(1), "│", style);
-        set_symbol(buffer, col, bottom, "┴", style);
-        set_symbol(buffer, col, bottom.saturating_sub(1), "│", style);
-    }
-
-    for y in minor_ticks(y_bounds) {
-        let row = y_to_row(y, y_bounds, plot);
-        set_symbol(buffer, left, row, "├", style);
-        set_symbol(buffer, right, row, "┤", style);
-    }
-    for y in major_ticks(y_bounds) {
-        let row = y_to_row(y, y_bounds, plot);
-        set_symbol(buffer, left, row, "├", style);
-        set_symbol(buffer, left.saturating_add(1), row, "─", style);
-        set_symbol(buffer, right, row, "┤", style);
-        set_symbol(buffer, right.saturating_sub(1), row, "─", style);
-    }
-}
-
-fn draw_plot_labels(
-    buffer: &mut Buffer,
-    area: Rect,
-    plot: Rect,
-    x_bounds: [f64; 2],
-    y_bounds: [f64; 2],
-    x_axis_label: &str,
-    y_axis_label: &str,
-) {
-    let style = Style::default().fg(Color::Black).bg(Color::White);
-    let bottom = plot.bottom().saturating_sub(1);
-
-    for x in major_ticks(x_bounds) {
-        let label = superscript_tick(x);
-        let col = centered_label_x(x_to_col(x, x_bounds, plot), label.chars().count() as u16);
-        put_string(buffer, col, bottom.saturating_add(1), &label, style);
-    }
-    for y in major_ticks(y_bounds) {
-        let label = superscript_tick(y);
-        let row = y_to_row(y, y_bounds, plot);
-        let col = plot.x.saturating_sub(label.chars().count() as u16 + 1);
-        put_string(buffer, col, row, &label, style);
-    }
-
-    let x_label_x = centered_label_x(
-        plot.x.saturating_add(plot.width / 2),
-        x_axis_label.chars().count() as u16,
-    );
-    put_string(
-        buffer,
-        x_label_x,
-        area.bottom().saturating_sub(1),
-        x_axis_label,
-        style,
-    );
-    put_string(
-        buffer,
-        area.x.saturating_add(1),
-        plot.y.saturating_sub(1),
-        y_axis_label,
-        style,
-    );
-}
-
-fn draw_plot_series(
-    buffer: &mut Buffer,
-    plot: Rect,
-    x_bounds: [f64; 2],
-    y_bounds: [f64; 2],
-    points: &[(f64, f64)],
-) {
-    let style = Style::default().fg(Color::Red).bg(Color::White);
-    let mut cells = std::collections::BTreeMap::<(u16, u16), u8>::new();
-    for (x, y) in points {
-        let Some((col, row, mask)) = point_to_braille_cell(*x, *y, x_bounds, y_bounds, plot) else {
-            continue;
-        };
-        for (dot_col, dot_row, dot_mask) in expanded_braille_dot(col, row, mask, plot) {
-            cells
-                .entry((dot_col, dot_row))
-                .and_modify(|existing| *existing |= dot_mask)
-                .or_insert(dot_mask);
-        }
-    }
-    for ((col, row), mask) in cells {
-        if let Some(symbol) = char::from_u32(0x2800 + u32::from(mask)) {
-            set_symbol(buffer, col, row, &symbol.to_string(), style);
-        }
-    }
-}
-
-fn draw_energy_marker(buffer: &mut Buffer, plot: Rect, x_bounds: [f64; 2], x: f64) {
-    if x < x_bounds[0] || x > x_bounds[1] {
-        return;
-    }
-    let style = Style::default().fg(Color::Blue).bg(Color::White);
-    let col = x_to_col(x, x_bounds, plot);
-    for row in plot.y.saturating_add(1)..plot.bottom().saturating_sub(1) {
-        set_symbol(buffer, col, row, "│", style);
-    }
-}
-
-fn point_to_braille_cell(
-    x: f64,
-    y: f64,
-    x_bounds: [f64; 2],
-    y_bounds: [f64; 2],
-    plot: Rect,
-) -> Option<(u16, u16, u8)> {
-    let inner_width = plot.width.checked_sub(2)?;
-    let inner_height = plot.height.checked_sub(2)?;
-    let x_span = (x_bounds[1] - x_bounds[0]).max(f64::EPSILON);
-    let y_span = (y_bounds[1] - y_bounds[0]).max(f64::EPSILON);
-    let x_t = ((x - x_bounds[0]) / x_span).clamp(0.0, 1.0);
-    let y_t = ((y - y_bounds[0]) / y_span).clamp(0.0, 1.0);
-    let sub_width = inner_width.saturating_mul(2).saturating_sub(1);
-    let sub_height = inner_height.saturating_mul(4).saturating_sub(1);
-    let sub_x = (x_t * f64::from(sub_width)).round() as u16;
-    let sub_y = ((1.0 - y_t) * f64::from(sub_height)).round() as u16;
-    let col = plot.x.saturating_add(1).saturating_add(sub_x / 2);
-    let row = plot.y.saturating_add(1).saturating_add(sub_y / 4);
-    let mask = braille_dot_mask((sub_x % 2) as u8, (sub_y % 4) as u8);
-    Some((col, row, mask))
-}
-
-fn braille_dot_mask(x: u8, y: u8) -> u8 {
-    match (x, y) {
-        (0, 0) => 0b0000_0001,
-        (0, 1) => 0b0000_0010,
-        (0, 2) => 0b0000_0100,
-        (0, 3) => 0b0100_0000,
-        (1, 0) => 0b0000_1000,
-        (1, 1) => 0b0001_0000,
-        (1, 2) => 0b0010_0000,
-        (1, 3) => 0b1000_0000,
-        _ => 0,
-    }
-}
-
-fn expanded_braille_dot(
-    col: u16,
-    row: u16,
-    mask: u8,
-    plot: Rect,
-) -> impl Iterator<Item = (u16, u16, u8)> {
-    let Some((sub_x, sub_y)) = braille_mask_position(mask) else {
-        return Vec::new().into_iter();
-    };
-    let base_x = i32::from(col.saturating_sub(plot.x.saturating_add(1))) * 2 + i32::from(sub_x);
-    let base_y = i32::from(row.saturating_sub(plot.y.saturating_add(1))) * 4 + i32::from(sub_y);
-    let max_x = i32::from(plot.width.saturating_sub(2)) * 2;
-    let max_y = i32::from(plot.height.saturating_sub(2)) * 4;
-    let mut dots = Vec::new();
-    for (dx, dy) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
-        let x = base_x + dx;
-        let y = base_y + dy;
-        if x < 0 || y < 0 || x >= max_x || y >= max_y {
-            continue;
-        }
-        let cell_col = plot.x.saturating_add(1).saturating_add((x / 2) as u16);
-        let cell_row = plot.y.saturating_add(1).saturating_add((y / 4) as u16);
-        dots.push((
-            cell_col,
-            cell_row,
-            braille_dot_mask((x % 2) as u8, (y % 4) as u8),
-        ));
-    }
-    dots.into_iter()
-}
-
-fn braille_mask_position(mask: u8) -> Option<(u8, u8)> {
-    match mask {
-        0b0000_0001 => Some((0, 0)),
-        0b0000_0010 => Some((0, 1)),
-        0b0000_0100 => Some((0, 2)),
-        0b0100_0000 => Some((0, 3)),
-        0b0000_1000 => Some((1, 0)),
-        0b0001_0000 => Some((1, 1)),
-        0b0010_0000 => Some((1, 2)),
-        0b1000_0000 => Some((1, 3)),
-        _ => None,
-    }
-}
-
-fn x_to_col(value: f64, bounds: [f64; 2], plot: Rect) -> u16 {
-    let span = (bounds[1] - bounds[0]).max(f64::EPSILON);
-    let t = ((value - bounds[0]) / span).clamp(0.0, 1.0);
-    plot.x
-        .saturating_add(1)
-        .saturating_add((t * f64::from(plot.width.saturating_sub(3))).round() as u16)
-}
-
-fn y_to_row(value: f64, bounds: [f64; 2], plot: Rect) -> u16 {
-    let span = (bounds[1] - bounds[0]).max(f64::EPSILON);
-    let t = ((value - bounds[0]) / span).clamp(0.0, 1.0);
-    plot.y
-        .saturating_add(1)
-        .saturating_add(((1.0 - t) * f64::from(plot.height.saturating_sub(3))).round() as u16)
-}
-
-fn centered_label_x(center: u16, width: u16) -> u16 {
-    center.saturating_sub(width / 2)
-}
-
-fn put_string(buffer: &mut Buffer, x: u16, y: u16, text: &str, style: Style) {
-    for (offset, ch) in text.chars().enumerate() {
-        set_symbol(
-            buffer,
-            x.saturating_add(offset as u16),
-            y,
-            &ch.to_string(),
-            style,
-        );
-    }
-}
-
-fn set_symbol(buffer: &mut Buffer, x: u16, y: u16, symbol: &str, style: Style) {
-    if x >= buffer.area().right() || y >= buffer.area().bottom() {
-        return;
-    }
-    buffer[(x, y)].set_symbol(symbol).set_style(style);
+    root.draw_text("10", &base_style, (base_x, base_y))
+        .map_err(|error| error.to_string())?;
+    root.draw_text(&exponent_text, &exponent_style, (base_x + 19, base_y - 7))
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -807,7 +875,8 @@ mod tests {
                 "1 Material/Input",
                 "2 Energy/Sweep",
                 "3 Result/Series",
-                "4 IMFP log-log graph"
+                "4 IMFP log-log graph",
+                "5 Help/Log"
             ]
         );
     }
@@ -828,6 +897,7 @@ mod tests {
         assert!(rendered.contains("2 Energy/Sweep"));
         assert!(rendered.contains("4 IMFP log-log graph"));
         assert!(rendered.contains("3 Result/Series"));
+        assert!(rendered.contains("5 Help/Log"));
         assert!(rendered.contains("Electron energy"));
         assert!(rendered.contains("IMFP at energy"));
         assert!(rendered.contains("range min"));
@@ -835,61 +905,103 @@ mod tests {
     }
 
     #[test]
-    fn graph_uses_solid_black_axes_and_high_resolution_red_series_without_top_or_right_labels() {
-        let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 24));
-        let points = vec![(1.0, -1.0), (1.6, -0.2), (2.2, 0.4), (3.0, 1.0)];
+    fn visual_mode_marks_focused_pane_title() {
+        let backend = TestBackend::new(120, 40);
+        let terminal = Terminal::new(backend);
+        let Ok(mut terminal) = terminal else {
+            unreachable!("test backend should be constructible");
+        };
+        let mut state = AppState::new(None, 50.0, 2000.0);
+        state.focused_pane = Pane::HelpLog;
+        state.mode = Mode::Visual;
 
-        draw_graph_buffer(
-            &mut buffer,
-            Rect::new(0, 0, 80, 24),
+        let result = terminal.draw(|frame| render(frame, &state));
+
+        assert!(result.is_ok());
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("5 Help/Log [VISUAL]"));
+    }
+
+    #[test]
+    fn plotters_bitmap_graph_image_contains_non_white_pixels() {
+        let points = vec![(1.0, -0.2), (1.5, 0.0), (2.0, 0.3), (3.0, 1.0)];
+
+        let image = render_plot_image(
+            320,
+            240,
             &points,
             "Electron Energy / eV",
             "IMFP / nm",
-            Some(2.2),
-        );
+            Some(2.0),
+        )
+        .expect("plot image should render");
 
-        let rendered = buffer_text(&buffer);
-        assert!(rendered.contains("┌"));
-        assert!(rendered.contains("┬"));
-        assert!(!rendered.contains('.'));
-        assert!(rendered.chars().any(is_braille));
-        assert!(!rendered.contains('╱'));
-        assert!(!rendered.contains('╲'));
+        assert_eq!(image.width(), 320);
+        assert_eq!(image.height(), 240);
         assert!(
-            buffer
-                .content()
-                .iter()
-                .filter(|cell| cell.fg == Color::Red)
-                .count()
-                > 0
+            image
+                .to_rgb8()
+                .pixels()
+                .any(|pixel| pixel.0 != [255, 255, 255])
         );
-        assert!(
-            buffer
-                .content()
-                .iter()
-                .filter(|cell| cell.fg == Color::Blue)
-                .count()
-                > 0
-        );
-        assert!(!row_text(&buffer, 0).contains("Electron Energy / eV"));
-        assert!(!right_edge_text(&buffer, 16).contains("IMFP / nm"));
     }
 
     #[test]
-    fn graph_series_uses_braille_subcell_resolution() {
-        let point =
-            point_to_braille_cell(1.25, 0.25, [1.0, 2.0], [0.0, 1.0], Rect::new(0, 0, 12, 8))
-                .expect("point should fit plot");
+    fn graph_image_render_starts_background_job_without_blocking_for_cache() {
+        let backend = TestBackend::new(120, 40);
+        let terminal = Terminal::new(backend);
+        let Ok(mut terminal) = terminal else {
+            unreachable!("test backend should be constructible");
+        };
+        let state = AppState::new(None, 50.0, 2000.0);
+        let picker = Picker::from_fontsize((10, 20));
+        let mut graph_image = GraphImageState::new(picker);
 
-        assert_ne!(point.2, braille_dot_mask(0, 0));
+        terminal
+            .draw(|frame| render_with_graph_image(frame, &state, &mut graph_image))
+            .expect("render should start graph worker");
+
+        assert!(graph_image.pending_key.is_some());
+        assert!(graph_image.cache.is_none());
     }
 
     #[test]
-    fn graph_series_expands_each_braille_dot_for_visibility() {
-        let dots: Vec<_> =
-            expanded_braille_dot(5, 5, braille_dot_mask(1, 2), Rect::new(0, 0, 12, 8)).collect();
+    fn graph_image_render_adopts_completed_background_image() {
+        let backend = TestBackend::new(120, 40);
+        let terminal = Terminal::new(backend);
+        let Ok(mut terminal) = terminal else {
+            unreachable!("test backend should be constructible");
+        };
+        let state = AppState::new(None, 50.0, 2000.0);
+        let picker = Picker::from_fontsize((10, 20));
+        let mut graph_image = GraphImageState::new(picker);
 
-        assert!(dots.len() > 1);
+        terminal
+            .draw(|frame| render_with_graph_image(frame, &state, &mut graph_image))
+            .expect("render should start graph worker");
+        let expected_key = graph_image
+            .pending_key
+            .expect("first render should leave an image job pending");
+
+        for _ in 0..50 {
+            receive_graph_image_results(&mut graph_image);
+            if graph_image
+                .cache
+                .as_ref()
+                .is_some_and(|cache| cache.key == expected_key)
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        assert!(graph_image.pending_key.is_none());
+        assert!(
+            graph_image
+                .cache
+                .as_ref()
+                .is_some_and(|cache| cache.key == expected_key)
+        );
     }
 
     #[test]
@@ -965,19 +1077,18 @@ mod tests {
     }
 
     #[test]
-    fn formats_log_ticks_with_superscript_exponents() {
-        assert_eq!(superscript_tick(0.0), "10⁰");
-        assert_eq!(superscript_tick(3.0), "10³");
-        assert_eq!(superscript_tick(-1.0), "10⁻¹");
-        assert_eq!(superscript_tick(0.4), "");
-    }
+    fn log_plot_ticks_separate_major_exponents_from_minor_positions() {
+        assert_eq!(major_log_tick_exponents([1.0, 3.0]), vec![1, 2, 3]);
 
-    #[test]
-    fn computes_minor_ticks_inside_decades() {
-        let ticks = minor_ticks([0.0, 1.0]);
+        let minor = minor_log_ticks([1.0, 2.0]);
 
-        assert_eq!(ticks.len(), 8);
-        assert!(ticks.iter().all(|tick| *tick > 0.0 && *tick < 1.0));
+        assert_eq!(minor.len(), 8);
+        assert!(minor.iter().all(|tick| *tick > 1.0 && *tick < 2.0));
+        assert!(
+            minor
+                .iter()
+                .any(|tick| { (*tick - (1.0 + 2.0_f64.log10())).abs() < f64::EPSILON })
+        );
     }
 
     fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
@@ -986,30 +1097,5 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>()
-    }
-
-    fn row_text(buffer: &ratatui::buffer::Buffer, y: u16) -> String {
-        (0..buffer.area().width)
-            .map(|x| buffer[(x, y)].symbol())
-            .collect::<String>()
-    }
-
-    fn right_edge_text(buffer: &ratatui::buffer::Buffer, width: u16) -> String {
-        let start = buffer.area().right().saturating_sub(width);
-        buffer
-            .content()
-            .chunks(buffer.area().width as usize)
-            .map(|row| {
-                row.iter()
-                    .skip(start as usize)
-                    .map(|cell| cell.symbol())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    fn is_braille(ch: char) -> bool {
-        ('\u{2800}'..='\u{28ff}').contains(&ch)
     }
 }

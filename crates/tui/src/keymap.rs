@@ -35,6 +35,7 @@ pub fn map_key_event(event: KeyEvent, state: &mut KeyInputState, mode: Mode) -> 
         KeyCode::Char('2') => Some(Action::Focus(Pane::EnergySweep)),
         KeyCode::Char('3') => Some(Action::Focus(Pane::ResultSeries)),
         KeyCode::Char('4') => Some(Action::Focus(Pane::Graph)),
+        KeyCode::Char('5') => Some(Action::Focus(Pane::HelpLog)),
         KeyCode::Tab => Some(Action::NextPane),
         KeyCode::BackTab => Some(Action::PreviousPane),
         KeyCode::Char('h') if event.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -72,6 +73,7 @@ pub fn map_key_event(event: KeyEvent, state: &mut KeyInputState, mode: Mode) -> 
         KeyCode::Char('x') => Some(Action::ClearCurrentField),
         KeyCode::Char('r') => Some(Action::Recalculate),
         KeyCode::Char(':') => Some(Action::StartCommand),
+        KeyCode::Char('v') => Some(Action::StartVisual),
         KeyCode::Char('+') => Some(Action::ZoomIn),
         KeyCode::Char('-') => Some(Action::ZoomOut),
         KeyCode::Char('0') => Some(Action::ResetZoom),
@@ -96,7 +98,7 @@ mod tests {
         assert_eq!(action, Some(Action::Focus(Pane::ResultSeries)));
         assert_eq!(
             map_key_event(key(KeyCode::Char('5')), &mut state, Mode::Normal),
-            None
+            Some(Action::Focus(Pane::HelpLog))
         );
     }
 
@@ -153,6 +155,7 @@ mod tests {
             (KeyCode::Char('x'), Some(Action::ClearCurrentField)),
             (KeyCode::Char('r'), Some(Action::Recalculate)),
             (KeyCode::Char(':'), Some(Action::StartCommand)),
+            (KeyCode::Char('v'), Some(Action::StartVisual)),
             (KeyCode::Char('+'), Some(Action::ZoomIn)),
             (KeyCode::Char('-'), Some(Action::ZoomOut)),
             (KeyCode::Char('0'), Some(Action::ResetZoom)),

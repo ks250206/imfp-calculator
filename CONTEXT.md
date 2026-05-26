@@ -24,13 +24,14 @@ UI層にTPP-2M式、係数計算、単位変換、スイープ生成を複製し
 
 ## 最近の採用判断
 
-- TUIのGraphペインは `ratatui` bufferへ直接描画する。理由は `docs/adr/0005-direct-buffer-tui-graph-rendering.md` を参照する。
-- Graphペインだけ端末テーマに依存しない白背景にし、軸・tick・ラベルは黒系、seriesはBrailleサブセルを使った赤系の高分解能ドットで描く。点は中心サブセルと近傍サブセルを塗って太めにする。
+- TUIのGraphペインは `plotters-bitmap` で画像生成し、`ratatui-image` で表示する。理由は `docs/adr/0006-image-based-tui-graph-rendering.md` を参照する。旧来の直接buffer描画や `plotters-ratatui-backend` 相当の描画経路は持たない。
+- Graphペインだけ端末テーマに依存しない白背景にする。`plotters-bitmap` による画像生成は別スレッドで行い、完了までは白背景を表示する。
 - X/Y軸は両対数表示で、major tickは `10⁰` のような上付き指数表記にする。minor tickも表示し、tickは内向きに描く。上軸・右軸は下軸・左軸をミラーリングする。
 - TUIでは `energy` ではなく `Electron energy` と表示する。
 - Electron energyには Al Kα、Mg Kα、Cr Kα、Ga Kα のプリセットを持つ。
 - スイープ範囲は `auto` / `manual` を持つ。既定は `auto` で、`auto` は `50..=electron_energy_e_v`、`manual` はユーザー編集値を使う。
-- TUIのペイン移動は `Tab` / `Shift-Tab` と数字キーで行う。Help/Logはフォーカス対象外にする。`h` / `l` と左右矢印は入力フィールド内カーソル移動、preset / enum候補切り替え、Graph上のElectron energyマーカー移動に使い、ペイン移動には使わない。
+- TUIのペイン移動は `Tab` / `Shift-Tab` と数字キーで行う。Help/Logは5番ペインとしてフォーカス対象にする。`h` / `l` と左右矢印は入力フィールド内カーソル移動、preset / enum候補切り替え、Graph上のElectron energyマーカー移動に使い、ペイン移動には使わない。
+- 全フォーカス可能ペインは `v` でVisual modeに入れる。
 - 材料プリセットはMVPでは単元素材料だけにする。化合物、有機化合物、ポリマーの組み込みプリセットは扱わない。
 - 単元素材料プリセットの `valence_electrons` はTPP-2M入力用の固定プリセット値であり、実行時に周期表の族番号や電子配置から自動推定しない。
 - 外部由来の表ファイルはリポジトリに含めない。必要ならローカル参照に留める。

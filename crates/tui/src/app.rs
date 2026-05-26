@@ -14,11 +14,12 @@ pub enum Pane {
 }
 
 impl Pane {
-    pub const ORDER: [Self; 4] = [
+    pub const ORDER: [Self; 5] = [
         Self::MaterialInput,
         Self::EnergySweep,
         Self::ResultSeries,
         Self::Graph,
+        Self::HelpLog,
     ];
 
     pub fn from_number(number: u8) -> Option<Self> {
@@ -27,6 +28,7 @@ impl Pane {
             2 => Some(Self::EnergySweep),
             3 => Some(Self::ResultSeries),
             4 => Some(Self::Graph),
+            5 => Some(Self::HelpLog),
             _ => None,
         }
     }
@@ -41,7 +43,7 @@ impl Pane {
             Self::EnergySweep => "2 Energy/Sweep",
             Self::ResultSeries => "3 Result/Series",
             Self::Graph => "4 IMFP log-log graph",
-            Self::HelpLog => "Help/Log",
+            Self::HelpLog => "5 Help/Log",
         }
     }
 }
@@ -50,6 +52,7 @@ impl Pane {
 pub enum Mode {
     Normal,
     Editing,
+    Visual,
     Search,
     Help,
     Command,
@@ -193,6 +196,7 @@ pub enum Action {
     Escape,
     Recalculate,
     StartCommand,
+    StartVisual,
     Quit,
     ZoomIn,
     ZoomOut,
@@ -295,7 +299,7 @@ impl AppState {
 pub fn reduce(mut state: AppState, action: Action) -> AppState {
     match action {
         Action::Focus(pane) => {
-            if state.mode == Mode::Normal && pane.is_focusable() {
+            if matches!(state.mode, Mode::Normal | Mode::Visual) && pane.is_focusable() {
                 state.focused_pane = pane;
                 reset_cursor_for_current_field(&mut state);
             }
@@ -350,6 +354,7 @@ pub fn reduce(mut state: AppState, action: Action) -> AppState {
         }
         Action::Recalculate => recalculate(&mut state),
         Action::StartCommand => state.mode = Mode::Command,
+        Action::StartVisual => state.mode = Mode::Visual,
         Action::Quit => {
             if state.mode == Mode::Help {
                 state.mode = Mode::Normal;
@@ -369,7 +374,7 @@ pub fn reduce(mut state: AppState, action: Action) -> AppState {
 }
 
 fn cycle_pane(state: &mut AppState, direction: isize) {
-    if state.mode != Mode::Normal {
+    if !matches!(state.mode, Mode::Normal | Mode::Visual) {
         return;
     }
     let current = Pane::ORDER
@@ -394,7 +399,7 @@ fn move_horizontal(state: &mut AppState, direction: isize) {
         move_edit_cursor(state, direction);
         return;
     }
-    if state.mode == Mode::Normal {
+    if matches!(state.mode, Mode::Normal | Mode::Visual) {
         match state.focused_pane {
             Pane::MaterialInput if state.selected_material_field == MaterialField::Preset => {
                 cycle_material_preset(state, direction);
@@ -441,8 +446,12 @@ fn move_horizontal(state: &mut AppState, direction: isize) {
 
 fn move_down_or_field(state: &mut AppState, direction: isize) {
     match state.focused_pane {
-        Pane::MaterialInput if state.mode == Mode::Normal => cycle_material_field(state, direction),
-        Pane::EnergySweep if state.mode == Mode::Normal => cycle_energy_field(state, direction),
+        Pane::MaterialInput if matches!(state.mode, Mode::Normal | Mode::Visual) => {
+            cycle_material_field(state, direction)
+        }
+        Pane::EnergySweep if matches!(state.mode, Mode::Normal | Mode::Visual) => {
+            cycle_energy_field(state, direction)
+        }
         _ => move_selection(state, direction),
     }
 }
@@ -1001,7 +1010,7 @@ mod tests {
         assert_eq!(state.focused_pane, Pane::ResultSeries);
 
         let state = reduce(state, Action::Focus(Pane::HelpLog));
-        assert_eq!(state.focused_pane, Pane::ResultSeries);
+        assert_eq!(state.focused_pane, Pane::HelpLog);
     }
 
     #[test]
@@ -1015,9 +1024,11 @@ mod tests {
         let state = reduce(state, Action::NextPane);
         assert_eq!(state.focused_pane, Pane::Graph);
         let state = reduce(state, Action::NextPane);
+        assert_eq!(state.focused_pane, Pane::HelpLog);
+        let state = reduce(state, Action::NextPane);
         assert_eq!(state.focused_pane, Pane::MaterialInput);
         let state = reduce(state, Action::PreviousPane);
-        assert_eq!(state.focused_pane, Pane::Graph);
+        assert_eq!(state.focused_pane, Pane::HelpLog);
     }
 
     #[test]
@@ -1101,7 +1112,19 @@ mod tests {
     }
 
     #[test]
-    fn focus_actions_are_ignored_while_not_in_normal_mode() {
+    fn visual_mode_is_available_for_every_focusable_pane() {
+        for pane in Pane::ORDER {
+            let state = AppState::new(None, 50.0, 2000.0);
+            let state = reduce(state, Action::Focus(pane));
+            let state = reduce(state, Action::StartVisual);
+
+            assert_eq!(state.focused_pane, pane);
+            assert_eq!(state.mode, Mode::Visual);
+        }
+    }
+
+    #[test]
+    fn focus_actions_are_ignored_while_editing() {
         let state = AppState::new(None, 50.0, 2000.0);
         let state = reduce(state, Action::MoveDown);
         let state = reduce(state, Action::StartInsertBefore);

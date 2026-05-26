@@ -6,8 +6,12 @@ license.workspace = true
 
 [dependencies]
 crossterm.workspace = true
+image.workspace = true
 periodic-table-on-an-enum.workspace = true
+plotters.workspace = true
+plotters-bitmap.workspace = true
 ratatui.workspace = true
+ratatui-image.workspace = true
 tpp2m-core = { path = "../core" }
 
 [lints]
