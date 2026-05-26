@@ -1,5 +1,6 @@
 pub mod app;
 pub mod keymap;
+pub mod presets;
 pub mod render;
 
 use std::io;
@@ -65,7 +66,7 @@ fn run_loop(
         if event::poll(Duration::from_millis(100)).map_err(|error| error.to_string())? {
             let event = event::read().map_err(|error| error.to_string())?;
             if let Event::Key(key_event) = event
-                && let Some(action) = keymap::map_key_event(key_event, &mut key_state)
+                && let Some(action) = keymap::map_key_event(key_event, &mut key_state, state.mode)
             {
                 state = reduce(state, action);
             }

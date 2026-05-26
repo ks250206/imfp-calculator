@@ -16,6 +16,13 @@
 
 - Ratatui API documentation — https://docs.rs/ratatui/latest/ratatui/
 - Ratatui website — https://ratatui.rs/
+- plotters-ratatui-backend — https://docs.rs/plotters-ratatui-backend
+- Plotters — https://docs.rs/plotters
+
+## Element presets
+
+- periodic-table-on-an-enum crate — https://docs.rs/periodic-table-on-an-enum
+- PubChem Periodic Table data, as surfaced by the periodic-table-on-an-enum crate. Preset `valence_electrons` values are local TPP-2M input defaults and are not inferred from periodic-table group numbers at runtime.
 
 ## WASM
 

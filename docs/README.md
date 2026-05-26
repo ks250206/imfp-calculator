@@ -4,13 +4,14 @@
 
 ## 読む順番
 
-1. `ssot/product.md` — 何を作るか。
-2. `ssot/repository-layout.md` — どこに実装するか。
-3. `ssot/calculation.md` — 何をどう計算するか。
-4. `ssot/cli.md` / `ssot/tui.md` / `ssot/wasm.md` — 入口別の仕様。
-5. `ssot/tdd-and-quality.md` — どうテストするか。
-6. `ssot/errors.md` — どう失敗を扱うか。
-7. `adr/*.md` — なぜその選択をしたか。
+1. `../CONTEXT.md` — 現在の実装文脈と最近の採用判断。
+2. `ssot/product.md` — 何を作るか。
+3. `ssot/repository-layout.md` — どこに実装するか。
+4. `ssot/calculation.md` — 何をどう計算するか。
+5. `ssot/cli.md` / `ssot/tui.md` / `ssot/wasm.md` — 入口別の仕様。
+6. `ssot/tdd-and-quality.md` — どうテストするか。
+7. `ssot/errors.md` — どう失敗を扱うか。
+8. `adr/*.md` — なぜその選択をしたか。
 
 ## SSoT更新ルール
 

@@ -94,10 +94,22 @@ Lazygit風に、左側に操作・入力ペイン、右側に結果・グラフ�
 
 | キー | 動作 |
 |---|---|
+| `j` / `k` | フィールドを上下に移動。 |
+| `Tab` | 次フィールドへ移動。入力ペイン以外では次ペインへ移動。 |
+| `Shift-Tab` | 前フィールドへ移動。入力ペイン以外では前ペインへ移動。 |
 | `i` | 現在フィールドを編集。 |
 | `a` | 現在フィールドを編集し末尾へ。 |
 | `x` | 現在フィールドの値をクリア。 |
 | `Enter` | 編集開始または確定。 |
+| `h` / `l` | プリセット項目では前後のプリセットへ切り替える。 |
+
+フォーム編集はフィールド選択とinline編集を基本とする。編集確定時に自動再計算する。
+
+inline編集中は、端末カーソルを現在の入力位置に表示する。MVPでは入力位置は編集バッファ末尾でよい。
+
+材料プリセット、Electron energyプリセット、Sweep範囲モードのような選択式フィールドでは、`Enter` で候補リストを開くか、`h` / `l` で前後の候補へ切り替える。
+
+`energy_min_e_v` または `energy_max_e_v` を手動編集した場合、Sweep範囲モードは `manual` に切り替わる。
 
 ### Graphペイン
 
@@ -115,10 +127,17 @@ Lazygit風に、左側に操作・入力ペイン、右側に結果・グラフ�
 - 横軸: `Electron Energy / eV`
 - 縦軸: `IMFP / nm`
 - 両軸とも対数表示。
+- Graphペインのプロット領域は端末テーマに依存せず白背景にする。
+- 軸、目盛、軸ラベルは黒系、プロット線は青系で描く。
+- 白背景はGraphペインに限定し、他ペインは通常のTUI表示を維持する。
 
 ### 実装
 
-`ratatui` のChartに渡す座標は `core` が生成した `log10` 座標を使う。
+Graphペインの描画は `plotters-ratatui-backend` + Plottersを第一候補として実装する。標準の `ratatui::widgets::Chart` だけでは、minor tick、内向きtick、上軸・右軸ミラーリング、白背景プロット領域の制御が不足しやすいためである。
+
+Plotters標準meshで不足する軸要素は、Plotters上に追加要素として手描きする。
+
+Plottersに渡す座標は `core` が生成した `log10` 座標を使う。
 
 ```text
 x = log10(Electron Energy / eV)
@@ -130,9 +149,17 @@ y = log10(IMFP / nm)
 例:
 
 ```text
-x_tick: value_log10 = 3.0, label = "1000"
-y_tick: value_log10 = 0.0, label = "1"
+x_tick: value_log10 = 3.0, label = "10³"
+y_tick: value_log10 = 0.0, label = "10⁰"
 ```
+
+### 目盛
+
+X軸、Y軸とも、major tickは10の整数冪で表示する。ラベルは `10⁰`, `10¹`, `10²` のように、指数を上付き文字で表示し、`^` 記号は使わない。
+
+minor tickは各decade内に表示する。major tickとminor tickはいずれもプロット領域の内向きに描く。
+
+右軸と上軸は、それぞれ左軸と下軸をミラーリングする。右軸と上軸にもtickとminor tickを表示するが、軸ラベルは左軸と下軸を主とする。
 
 ### 既定値
 
@@ -142,6 +169,52 @@ y_tick: value_log10 = 0.0, label = "1"
 | energy_max_e_v | 2000 |
 | points | 200 |
 | spacing | log |
+
+## Electron energyプリセット
+
+TUIでは `energy` ではなく `Electron energy` と表示する。
+
+Electron energyには、任意のeV入力に加えて次のX線源プリセットを用意する。
+
+| プリセット | electron_energy_e_v |
+|---|---:|
+| Al Kα | 1486.6 |
+| Mg Kα | 1253.6 |
+| Cr Kα | 5414.8 |
+| Ga Kα | 9252.13 |
+
+X線源プリセットはElectron energy入力補助であり、TPP-2M式そのものは変更しない。
+
+## 材料プリセット
+
+TUIには単元素材料プリセットを用意する。化合物、有機化合物、ポリマーの組み込みプリセットはMVPでは扱わない。
+
+単元素材料プリセットは、TPP-2M入力用の代表値セットとして次を持つ。
+
+| フィールド | 意味 |
+|---|---|
+| material_name | 表示名。例: `Si`, `Au`, `C`。 |
+| density_g_cm3 | 密度。 |
+| molar_mass_g_mol | 原子量。 |
+| valence_electrons | TPP-2M入力として使う価電子数。 |
+| band_gap_e_v | バンドギャップ。既定は0 eV。 |
+
+元素プリセットデータは、再利用条件が明確な出典から再構成し、出典を `docs/references.md` またはプリセットデータ近傍に記録する。外部由来の元データファイルはリポジトリに含めない。
+
+`valence_electrons` はTPP-2M入力用のプリセット値として固定し、周期表の族番号や電子配置から自動推定しない。ユーザーはTUI上で常に編集できる。
+
+プリセット適用後にユーザーが値を編集した場合、材料名はユーザー編集値であることが分かる表示にする。例: `Custom from Si`。
+
+## Sweep範囲モード
+
+TUIのスイープ範囲は `auto` または `manual` で選択する。
+
+| モード | 動作 |
+|---|---|
+| `auto` | `energy_min_e_v = 10`、`energy_max_e_v = electron_energy_e_v` とする。X線源プリセット選択時は線源エネルギーが上限になる。 |
+| `manual` | ユーザーが `energy_min_e_v` と `energy_max_e_v` を直接編集する。 |
+
+`manual` のフォームは常にTUI上に残す。`auto` の間は現在の自動範囲を表示し、手動編集を始めた時点で `manual` に切り替える。
 
 ### グラフエラー
 
@@ -187,5 +260,6 @@ fn reduce(state: AppState, action: Action) -> AppState;
 ## 受け入れ条件
 
 - TUIのスクリーンショットまたはsnapshotで、5ペイン構成が確認できる。
+- Graphペインのsnapshotまたはスクリーンショットで、白背景、黒系の軸・目盛・軸ラベル、青系のプロット線、上軸・右軸ミラーリング、major/minor tickが確認できる。
 - 主要キー操作は端末実機なしに reducer テストで検証できる。
 - 目視だけに依存した受け入れをしない。

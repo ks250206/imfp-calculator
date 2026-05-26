@@ -1,13 +1,23 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{Action, Pane};
+use crate::app::{Action, Mode, Pane};
 
 #[derive(Default)]
 pub struct KeyInputState {
     pending_g: bool,
 }
 
-pub fn map_key_event(event: KeyEvent, state: &mut KeyInputState) -> Option<Action> {
+pub fn map_key_event(event: KeyEvent, state: &mut KeyInputState, mode: Mode) -> Option<Action> {
+    if mode == Mode::Editing {
+        return match event.code {
+            KeyCode::Esc => Some(Action::Escape),
+            KeyCode::Enter => Some(Action::ConfirmOrEdit),
+            KeyCode::Backspace => Some(Action::Backspace),
+            KeyCode::Char(ch) => Some(Action::InputChar(ch)),
+            _ => None,
+        };
+    }
+
     if state.pending_g {
         state.pending_g = false;
         if matches!(event.code, KeyCode::Char('g')) {
@@ -72,7 +82,7 @@ mod tests {
     fn maps_number_keys_to_focus_actions() {
         let mut state = KeyInputState::default();
 
-        let action = map_key_event(key(KeyCode::Char('4')), &mut state);
+        let action = map_key_event(key(KeyCode::Char('4')), &mut state, Mode::Normal);
 
         assert_eq!(action, Some(Action::Focus(Pane::ResultSeries)));
     }
@@ -81,8 +91,8 @@ mod tests {
     fn maps_gg_sequence_to_go_top() {
         let mut state = KeyInputState::default();
 
-        let first = map_key_event(key(KeyCode::Char('g')), &mut state);
-        let second = map_key_event(key(KeyCode::Char('g')), &mut state);
+        let first = map_key_event(key(KeyCode::Char('g')), &mut state, Mode::Normal);
+        let second = map_key_event(key(KeyCode::Char('g')), &mut state, Mode::Normal);
 
         assert_eq!(first, None);
         assert_eq!(second, Some(Action::GoTop));
@@ -95,10 +105,12 @@ mod tests {
         let down = map_key_event(
             KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
             &mut state,
+            Mode::Normal,
         );
         let up = map_key_event(
             KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
             &mut state,
+            Mode::Normal,
         );
 
         assert_eq!(down, Some(Action::HalfPageDown));
@@ -130,7 +142,18 @@ mod tests {
         ];
 
         for (code, expected) in cases {
-            assert_eq!(map_key_event(key(code), &mut state), expected);
+            assert_eq!(map_key_event(key(code), &mut state, Mode::Normal), expected);
         }
+    }
+
+    #[test]
+    fn editing_mode_maps_characters_to_input_instead_of_global_shortcuts() {
+        let mut state = KeyInputState::default();
+
+        let action = map_key_event(key(KeyCode::Char('1')), &mut state, Mode::Editing);
+        let enter = map_key_event(key(KeyCode::Enter), &mut state, Mode::Editing);
+
+        assert_eq!(action, Some(Action::InputChar('1')));
+        assert_eq!(enter, Some(Action::ConfirmOrEdit));
     }
 }
