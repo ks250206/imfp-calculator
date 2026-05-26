@@ -624,72 +624,36 @@ fn draw_plot_series(
     points: &[(f64, f64)],
 ) {
     let style = Style::default().fg(Color::Red).bg(Color::White);
-    for pair in points.windows(2) {
-        let start = (
-            x_to_col(pair[0].0, x_bounds, plot),
-            y_to_row(pair[0].1, y_bounds, plot),
-        );
-        let end = (
-            x_to_col(pair[1].0, x_bounds, plot),
-            y_to_row(pair[1].1, y_bounds, plot),
-        );
-        draw_solid_line(buffer, start, end, style);
+    for (x, y) in points {
+        let col = x_to_col(*x, x_bounds, plot);
+        let row = y_to_row(*y, y_bounds, plot);
+        draw_large_dot(buffer, col, row, plot, style);
     }
 }
 
-fn draw_solid_line(buffer: &mut Buffer, start: (u16, u16), end: (u16, u16), style: Style) {
-    let mut x0 = i32::from(start.0);
-    let mut y0 = i32::from(start.1);
-    let x1 = i32::from(end.0);
-    let y1 = i32::from(end.1);
-    let dx = (x1 - x0).abs();
-    let sx = if x0 < x1 { 1 } else { -1 };
-    let dy = -(y1 - y0).abs();
-    let sy = if y0 < y1 { 1 } else { -1 };
-    let mut err = dx + dy;
-    let mut last_symbol = "─";
-
-    loop {
-        if x0 == x1 && y0 == y1 {
-            if x0 >= 0 && y0 >= 0 {
-                set_symbol(buffer, x0 as u16, y0 as u16, last_symbol, style);
-            }
-            break;
-        }
-
-        let previous = (x0, y0);
-        let e2 = err * 2;
-        if e2 >= dy {
-            err += dy;
-            x0 += sx;
-        }
-        if e2 <= dx {
-            err += dx;
-            y0 += sy;
-        }
-        let next = (x0, y0);
-        last_symbol = line_step_symbol(previous, next);
-        if previous.0 >= 0 && previous.1 >= 0 {
-            set_symbol(
-                buffer,
-                previous.0 as u16,
-                previous.1 as u16,
-                last_symbol,
-                style,
-            );
+fn draw_large_dot(buffer: &mut Buffer, x: u16, y: u16, plot: Rect, style: Style) {
+    for (dx, dy, symbol) in [(0_i16, 0_i16, "●"), (-1, 0, "●"), (1, 0, "●")] {
+        let Some(px) = offset_u16(x, dx) else {
+            continue;
+        };
+        let Some(py) = offset_u16(y, dy) else {
+            continue;
+        };
+        if px > plot.x
+            && px < plot.right().saturating_sub(1)
+            && py > plot.y
+            && py < plot.bottom().saturating_sub(1)
+        {
+            set_symbol(buffer, px, py, symbol, style);
         }
     }
 }
 
-fn line_step_symbol(start: (i32, i32), end: (i32, i32)) -> &'static str {
-    let dx = end.0 - start.0;
-    let dy = end.1 - start.1;
-    match (dx.signum(), dy.signum()) {
-        (_, 0) => "─",
-        (0, _) => "│",
-        (1, 1) | (-1, -1) => "╲",
-        (1, -1) | (-1, 1) => "╱",
-        _ => "─",
+fn offset_u16(value: u16, delta: i16) -> Option<u16> {
+    if delta.is_negative() {
+        value.checked_sub(delta.unsigned_abs())
+    } else {
+        value.checked_add(delta as u16)
     }
 }
 
@@ -773,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_uses_solid_black_axes_and_red_series_without_top_or_right_labels() {
+    fn graph_uses_solid_black_axes_and_red_dot_series_without_top_or_right_labels() {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 24));
         let points = vec![(1.0, -1.0), (1.6, -0.2), (2.2, 0.4), (3.0, 1.0)];
 
@@ -789,8 +753,9 @@ mod tests {
         assert!(rendered.contains("┌"));
         assert!(rendered.contains("┬"));
         assert!(!rendered.contains('.'));
-        assert!(!rendered.contains('●'));
-        assert!(rendered.contains('╱') || rendered.contains('╲'));
+        assert!(rendered.contains('●'));
+        assert!(!rendered.contains('╱'));
+        assert!(!rendered.contains('╲'));
         assert!(
             buffer
                 .content()

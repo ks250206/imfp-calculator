@@ -25,7 +25,7 @@ UI層にTPP-2M式、係数計算、単位変換、スイープ生成を複製し
 ## 最近の採用判断
 
 - TUIのGraphペインは `ratatui` bufferへ直接描画する。理由は `docs/adr/0005-direct-buffer-tui-graph-rendering.md` を参照する。
-- Graphペインだけ端末テーマに依存しない白背景にし、軸・tick・ラベルは黒系、プロット線は赤系にする。
+- Graphペインだけ端末テーマに依存しない白背景にし、軸・tick・ラベルは黒系、seriesは赤系の大きめの点で描く。
 - X/Y軸は両対数表示で、major tickは `10⁰` のような上付き指数表記にする。minor tickも表示し、tickは内向きに描く。上軸・右軸は下軸・左軸をミラーリングする。
 - TUIでは `energy` ではなく `Electron energy` と表示する。
 - Electron energyには Al Kα、Mg Kα、Cr Kα、Ga Kα のプリセットを持つ。
