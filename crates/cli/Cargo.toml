@@ -1,0 +1,25 @@
+[package]
+name = "tpp2m-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tpp2m"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+csv.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tpp2m-core = { path = "../core" }
+tpp2m-tui = { path = "../tui" }
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

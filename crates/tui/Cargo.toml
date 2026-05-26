@@ -1,0 +1,13 @@
+[package]
+name = "tpp2m-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crossterm.workspace = true
+ratatui.workspace = true
+tpp2m-core = { path = "../core" }
+
+[lints]
+workspace = true

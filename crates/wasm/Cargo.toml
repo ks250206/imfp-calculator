@@ -1,0 +1,20 @@
+[package]
+name = "tpp2m-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde.workspace = true
+serde-wasm-bindgen.workspace = true
+tpp2m-core = { path = "../core" }
+wasm-bindgen.workspace = true
+
+[dev-dependencies]
+wasm-bindgen-test.workspace = true
+
+[lints]
+workspace = true
