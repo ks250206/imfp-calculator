@@ -57,7 +57,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 cargo llvm-cov --workspace --all-features --fail-under-lines 80
-wasm-pack build crates/wasm --target web --out-dir ../../pkg
+wasm-pack build crates/wasm --release --target web --out-dir ../../pkg
 ```
 
 ## Documentation

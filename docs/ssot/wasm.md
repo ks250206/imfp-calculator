@@ -60,22 +60,24 @@ const result = calculate({
 
 ## ビルド
 
+WASM配布物はrelease buildを標準とする。workspaceの `[profile.release]` はサイズ優先に設定し、`crates/wasm` の `package.metadata.wasm-pack.profile.release` で `wasm-opt -Oz` を明示する。Rustが出すbulk-memory等の命令を `wasm-opt` が検証できるよう、必要なWebAssembly feature flagも併せて指定する。
+
 ブラウザ向けES module生成:
 
 ```bash
-wasm-pack build crates/wasm --target web --out-dir ../../pkg
+wasm-pack build crates/wasm --release --target web --out-dir ../../pkg
 ```
 
 バンドラ向け:
 
 ```bash
-wasm-pack build crates/wasm --target bundler --out-dir ../../pkg-bundler
+wasm-pack build crates/wasm --release --target bundler --out-dir ../../pkg-bundler
 ```
 
 Nodeテスト用:
 
 ```bash
-wasm-pack build crates/wasm --target nodejs --out-dir ../../pkg-node
+wasm-pack build crates/wasm --release --target nodejs --out-dir ../../pkg-node
 ```
 
 ## エラー
