@@ -21,6 +21,7 @@
 
 - periodic-table-on-an-enum crate — https://docs.rs/periodic-table-on-an-enum
 - PubChem Periodic Table data, as surfaced by the periodic-table-on-an-enum crate. Preset `valence_electrons` values are local TPP-2M input defaults and are not inferred from periodic-table group numbers at runtime.
+- 一部の元素プリセットはTPP-2M回帰テスト値に合わせたローカル既定値で上書きする。外部由来の表ファイルはテストfixtureとして参照しない。
 
 ## WASM
 

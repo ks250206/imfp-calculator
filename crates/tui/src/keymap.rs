@@ -15,6 +15,9 @@ pub fn map_key_event(event: KeyEvent, state: &mut KeyInputState, mode: Mode) -> 
             KeyCode::BackTab => Some(Action::PreviousPane),
             KeyCode::Enter => Some(Action::ConfirmOrEdit),
             KeyCode::Backspace => Some(Action::Backspace),
+            KeyCode::Delete => Some(Action::Delete),
+            KeyCode::Left => Some(Action::MoveLeft),
+            KeyCode::Right => Some(Action::MoveRight),
             KeyCode::Char(ch) => Some(Action::InputChar(ch)),
             _ => None,
         };
@@ -41,9 +44,13 @@ pub fn map_key_event(event: KeyEvent, state: &mut KeyInputState, mode: Mode) -> 
             Some(Action::MoveRight)
         }
         KeyCode::Char('h') => Some(Action::MoveLeft),
+        KeyCode::Left => Some(Action::MoveLeft),
         KeyCode::Char('j') => Some(Action::MoveDown),
+        KeyCode::Down => Some(Action::MoveDown),
         KeyCode::Char('k') => Some(Action::MoveUp),
+        KeyCode::Up => Some(Action::MoveUp),
         KeyCode::Char('l') => Some(Action::MoveRight),
+        KeyCode::Right => Some(Action::MoveRight),
         KeyCode::Char('g') => {
             state.pending_g = true;
             None
@@ -129,9 +136,13 @@ mod tests {
 
         let cases = [
             (KeyCode::Char('h'), Some(Action::MoveLeft)),
+            (KeyCode::Left, Some(Action::MoveLeft)),
             (KeyCode::Char('j'), Some(Action::MoveDown)),
+            (KeyCode::Down, Some(Action::MoveDown)),
             (KeyCode::Char('k'), Some(Action::MoveUp)),
+            (KeyCode::Up, Some(Action::MoveUp)),
             (KeyCode::Char('l'), Some(Action::MoveRight)),
+            (KeyCode::Right, Some(Action::MoveRight)),
             (KeyCode::Char('G'), Some(Action::GoBottom)),
             (KeyCode::Char('/'), Some(Action::StartSearch)),
             (KeyCode::Char('?'), Some(Action::ToggleHelp)),
@@ -159,9 +170,13 @@ mod tests {
         let action = map_key_event(key(KeyCode::Char('1')), &mut state, Mode::Editing);
         let tab = map_key_event(key(KeyCode::Tab), &mut state, Mode::Editing);
         let enter = map_key_event(key(KeyCode::Enter), &mut state, Mode::Editing);
+        let delete = map_key_event(key(KeyCode::Delete), &mut state, Mode::Editing);
+        let left = map_key_event(key(KeyCode::Left), &mut state, Mode::Editing);
 
         assert_eq!(action, Some(Action::InputChar('1')));
         assert_eq!(tab, Some(Action::NextPane));
         assert_eq!(enter, Some(Action::ConfirmOrEdit));
+        assert_eq!(delete, Some(Action::Delete));
+        assert_eq!(left, Some(Action::MoveLeft));
     }
 }

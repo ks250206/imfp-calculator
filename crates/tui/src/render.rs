@@ -642,10 +642,22 @@ fn draw_plot_series(
     points: &[(f64, f64)],
 ) {
     let style = Style::default().fg(Color::Red).bg(Color::White);
+    let mut cells = std::collections::BTreeMap::<(u16, u16), u8>::new();
     for (x, y) in points {
-        let col = x_to_col(*x, x_bounds, plot);
-        let row = y_to_row(*y, y_bounds, plot);
-        draw_large_dot(buffer, col, row, plot, style);
+        let Some((col, row, mask)) = point_to_braille_cell(*x, *y, x_bounds, y_bounds, plot) else {
+            continue;
+        };
+        for (dot_col, dot_row, dot_mask) in expanded_braille_dot(col, row, mask, plot) {
+            cells
+                .entry((dot_col, dot_row))
+                .and_modify(|existing| *existing |= dot_mask)
+                .or_insert(dot_mask);
+        }
+    }
+    for ((col, row), mask) in cells {
+        if let Some(symbol) = char::from_u32(0x2800 + u32::from(mask)) {
+            set_symbol(buffer, col, row, &symbol.to_string(), style);
+        }
     }
 }
 
@@ -660,29 +672,85 @@ fn draw_energy_marker(buffer: &mut Buffer, plot: Rect, x_bounds: [f64; 2], x: f6
     }
 }
 
-fn draw_large_dot(buffer: &mut Buffer, x: u16, y: u16, plot: Rect, style: Style) {
-    for (dx, dy, symbol) in [(0_i16, 0_i16, "●"), (-1, 0, "●"), (1, 0, "●")] {
-        let Some(px) = offset_u16(x, dx) else {
-            continue;
-        };
-        let Some(py) = offset_u16(y, dy) else {
-            continue;
-        };
-        if px > plot.x
-            && px < plot.right().saturating_sub(1)
-            && py > plot.y
-            && py < plot.bottom().saturating_sub(1)
-        {
-            set_symbol(buffer, px, py, symbol, style);
-        }
+fn point_to_braille_cell(
+    x: f64,
+    y: f64,
+    x_bounds: [f64; 2],
+    y_bounds: [f64; 2],
+    plot: Rect,
+) -> Option<(u16, u16, u8)> {
+    let inner_width = plot.width.checked_sub(2)?;
+    let inner_height = plot.height.checked_sub(2)?;
+    let x_span = (x_bounds[1] - x_bounds[0]).max(f64::EPSILON);
+    let y_span = (y_bounds[1] - y_bounds[0]).max(f64::EPSILON);
+    let x_t = ((x - x_bounds[0]) / x_span).clamp(0.0, 1.0);
+    let y_t = ((y - y_bounds[0]) / y_span).clamp(0.0, 1.0);
+    let sub_width = inner_width.saturating_mul(2).saturating_sub(1);
+    let sub_height = inner_height.saturating_mul(4).saturating_sub(1);
+    let sub_x = (x_t * f64::from(sub_width)).round() as u16;
+    let sub_y = ((1.0 - y_t) * f64::from(sub_height)).round() as u16;
+    let col = plot.x.saturating_add(1).saturating_add(sub_x / 2);
+    let row = plot.y.saturating_add(1).saturating_add(sub_y / 4);
+    let mask = braille_dot_mask((sub_x % 2) as u8, (sub_y % 4) as u8);
+    Some((col, row, mask))
+}
+
+fn braille_dot_mask(x: u8, y: u8) -> u8 {
+    match (x, y) {
+        (0, 0) => 0b0000_0001,
+        (0, 1) => 0b0000_0010,
+        (0, 2) => 0b0000_0100,
+        (0, 3) => 0b0100_0000,
+        (1, 0) => 0b0000_1000,
+        (1, 1) => 0b0001_0000,
+        (1, 2) => 0b0010_0000,
+        (1, 3) => 0b1000_0000,
+        _ => 0,
     }
 }
 
-fn offset_u16(value: u16, delta: i16) -> Option<u16> {
-    if delta.is_negative() {
-        value.checked_sub(delta.unsigned_abs())
-    } else {
-        value.checked_add(delta as u16)
+fn expanded_braille_dot(
+    col: u16,
+    row: u16,
+    mask: u8,
+    plot: Rect,
+) -> impl Iterator<Item = (u16, u16, u8)> {
+    let Some((sub_x, sub_y)) = braille_mask_position(mask) else {
+        return Vec::new().into_iter();
+    };
+    let base_x = i32::from(col.saturating_sub(plot.x.saturating_add(1))) * 2 + i32::from(sub_x);
+    let base_y = i32::from(row.saturating_sub(plot.y.saturating_add(1))) * 4 + i32::from(sub_y);
+    let max_x = i32::from(plot.width.saturating_sub(2)) * 2;
+    let max_y = i32::from(plot.height.saturating_sub(2)) * 4;
+    let mut dots = Vec::new();
+    for (dx, dy) in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
+        let x = base_x + dx;
+        let y = base_y + dy;
+        if x < 0 || y < 0 || x >= max_x || y >= max_y {
+            continue;
+        }
+        let cell_col = plot.x.saturating_add(1).saturating_add((x / 2) as u16);
+        let cell_row = plot.y.saturating_add(1).saturating_add((y / 4) as u16);
+        dots.push((
+            cell_col,
+            cell_row,
+            braille_dot_mask((x % 2) as u8, (y % 4) as u8),
+        ));
+    }
+    dots.into_iter()
+}
+
+fn braille_mask_position(mask: u8) -> Option<(u8, u8)> {
+    match mask {
+        0b0000_0001 => Some((0, 0)),
+        0b0000_0010 => Some((0, 1)),
+        0b0000_0100 => Some((0, 2)),
+        0b0100_0000 => Some((0, 3)),
+        0b0000_1000 => Some((1, 0)),
+        0b0001_0000 => Some((1, 1)),
+        0b0010_0000 => Some((1, 2)),
+        0b1000_0000 => Some((1, 3)),
+        _ => None,
     }
 }
 
@@ -767,7 +835,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_uses_solid_black_axes_and_red_dot_series_without_top_or_right_labels() {
+    fn graph_uses_solid_black_axes_and_high_resolution_red_series_without_top_or_right_labels() {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 24));
         let points = vec![(1.0, -1.0), (1.6, -0.2), (2.2, 0.4), (3.0, 1.0)];
 
@@ -784,7 +852,7 @@ mod tests {
         assert!(rendered.contains("┌"));
         assert!(rendered.contains("┬"));
         assert!(!rendered.contains('.'));
-        assert!(rendered.contains('●'));
+        assert!(rendered.chars().any(is_braille));
         assert!(!rendered.contains('╱'));
         assert!(!rendered.contains('╲'));
         assert!(
@@ -805,6 +873,23 @@ mod tests {
         );
         assert!(!row_text(&buffer, 0).contains("Electron Energy / eV"));
         assert!(!right_edge_text(&buffer, 16).contains("IMFP / nm"));
+    }
+
+    #[test]
+    fn graph_series_uses_braille_subcell_resolution() {
+        let point =
+            point_to_braille_cell(1.25, 0.25, [1.0, 2.0], [0.0, 1.0], Rect::new(0, 0, 12, 8))
+                .expect("point should fit plot");
+
+        assert_ne!(point.2, braille_dot_mask(0, 0));
+    }
+
+    #[test]
+    fn graph_series_expands_each_braille_dot_for_visibility() {
+        let dots: Vec<_> =
+            expanded_braille_dot(5, 5, braille_dot_mask(1, 2), Rect::new(0, 0, 12, 8)).collect();
+
+        assert!(dots.len() > 1);
     }
 
     #[test]
@@ -922,5 +1007,9 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn is_braille(ch: char) -> bool {
+        ('\u{2800}'..='\u{28ff}').contains(&ch)
     }
 }

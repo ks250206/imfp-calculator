@@ -93,11 +93,14 @@ Lazygit風に、左側に操作・入力ペイン、右側に結果・グラフ�
 | キー | 動作 |
 |---|---|
 | `j` / `k` | フィールドを上下に移動。 |
+| `↑` / `↓` | フィールドを上下に移動。 |
 | `Tab` | 次ペインへ移動。 |
 | `Shift-Tab` | 前ペインへ移動。 |
 | `h` / `l` | editable fieldでは入力カーソルを左右移動。preset / enum fieldでは候補を前後に切り替える。 |
+| `←` / `→` | editable fieldでは入力カーソルを左右移動。preset / enum fieldでは候補を前後に切り替える。 |
 | `i` | 現在カーソル位置の前からinsert modeに入る。 |
 | `a` | 現在カーソル位置の後ろからinsert modeに入る。 |
+| `Delete` | insert modeでカーソル右側の1文字を削除する。 |
 | `x` | 現在フィールドの値をクリア。 |
 | `Enter` | 編集開始または確定。 |
 
@@ -139,7 +142,7 @@ Energy/Sweepペインにも、Electron energyにおける単点IMFP値を表示�
 - 縦軸: `IMFP / nm`
 - 両軸とも対数表示。
 - Graphペインのプロット領域は端末テーマに依存せず白背景にする。
-- 軸、目盛、軸ラベルは黒系、seriesは赤系の大きめの点で描く。
+- 軸、目盛、軸ラベルは黒系、seriesは赤系の高分解能ドットで描く。
 - Electron energyの位置は縦マーカーとして表示する。
 - 白背景はGraphペインに限定し、他ペインは通常のTUI表示を維持する。
 
@@ -156,6 +159,10 @@ y = log10(IMFP / nm)
 
 軸ラベル、ツールチップ、結果表示では元の単位に戻す。
 
+Graph seriesはResult/Seriesの表とは別に、TUI表示用として最低1000点で生成する。Result/Seriesの `points` 指定は表の行数として維持し、Graphの表示分解能を端末上で極端に粗くしない。
+
+端末の1文字セル単位に丸めると座標解像度が不足するため、seriesはBraille文字の2×4サブセルを使って描画する。これにより、同じ端末サイズでも通常の文字セル描画より細かい座標に点を置ける。視認性を確保するため、各サンプル点は中心サブセルと上下左右の近傍サブセルを塗る。
+
 例:
 
 ```text
@@ -167,7 +174,7 @@ y_tick: value_log10 = 0.0, label = "10⁰"
 
 X軸、Y軸とも、major tickは10の整数冪で表示する。ラベルは `10⁰`, `10¹`, `10²` のように、指数を上付き文字で表示し、`^` 記号は使わない。
 
-minor tickは各decade内に表示する。major tickとminor tickはいずれもプロット領域の内向きに描く。枠線とtickは点線ではなく実線で描く。seriesは端末互換性を優先し、線分ではなく赤い大きめの点で各サンプル点を描く。
+minor tickは各decade内に表示する。major tickとminor tickはいずれもプロット領域の内向きに描く。枠線とtickは点線ではなく実線で描く。seriesは端末互換性を優先し、線分ではなく赤い高分解能ドットで各サンプル点を描く。
 
 右軸と上軸は、それぞれ左軸と下軸をミラーリングする。右軸と上軸にもtickとminor tickを表示するが、軸ラベルとtickラベルは表示しない。
 
@@ -176,9 +183,10 @@ minor tickは各decade内に表示する。major tickとminor tickはいずれ�
 | 項目 | 値 |
 |---|---:|
 | energy_min_e_v | 50 |
-| energy_max_e_v | 2000 |
+| energy_max_e_v | Electron energy |
 | points | 200 |
 | spacing | log |
+| range mode | auto |
 
 ## Electron energyプリセット
 
@@ -221,7 +229,7 @@ TUIのスイープ範囲は `auto` または `manual` で選択する。
 
 | モード | 動作 |
 |---|---|
-| `auto` | `energy_min_e_v = 10`、`energy_max_e_v = electron_energy_e_v` とする。X線源プリセット選択時は線源エネルギーが上限になる。 |
+| `auto` | `energy_min_e_v = 50`、`energy_max_e_v = electron_energy_e_v` とする。X線源プリセット選択時は線源エネルギーが上限になる。 |
 | `manual` | ユーザーが `energy_min_e_v` と `energy_max_e_v` を直接編集する。 |
 
 `manual` のフォームは常にTUI上に残す。`auto` の間は現在の自動範囲を表示し、手動編集を始めた時点で `manual` に切り替える。
@@ -271,6 +279,6 @@ fn reduce(state: AppState, action: Action) -> AppState;
 ## 受け入れ条件
 
 - TUIのスクリーンショットまたはsnapshotで、5ペイン構成が確認できる。
-- Graphペインのsnapshotまたはスクリーンショットで、白背景、黒系の軸・目盛・軸ラベル、赤系の大きめの点によるseries、上軸・右軸ミラーリング、major/minor tickが確認できる。
+- Graphペインのsnapshotまたはスクリーンショットで、白背景、黒系の軸・目盛・軸ラベル、赤系の高分解能ドットによるseries、上軸・右軸ミラーリング、major/minor tickが確認できる。
 - 主要キー操作は端末実機なしに reducer テストで検証できる。
 - 目視だけに依存した受け入れをしない。

@@ -2,6 +2,8 @@ use tpp2m_core::{LogPlotData, Spacing, SweepInput, SweepOutput, Tpp2mInput, Tpp2
 
 use crate::presets::{MaterialPreset, XRAY_PRESETS, element_presets};
 
+const GRAPH_MIN_POINTS: usize = 1000;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pane {
     MaterialInput,
@@ -185,6 +187,7 @@ pub enum Action {
     StartInsertAfter,
     InputChar(char),
     Backspace,
+    Delete,
     ClearCurrentField,
     ConfirmOrEdit,
     Escape,
@@ -199,8 +202,8 @@ pub enum Action {
 impl AppState {
     pub fn new(
         initial_input: Option<Tpp2mInput>,
-        energy_min_e_v: f64,
-        energy_max_e_v: f64,
+        _energy_min_e_v: f64,
+        _energy_max_e_v: f64,
     ) -> Self {
         let input = initial_input.unwrap_or(Tpp2mInput {
             electron_energy_e_v: 1000.0,
@@ -224,10 +227,10 @@ impl AppState {
             },
             energy: EnergyForm {
                 source: EnergySource::Custom,
-                range_mode: RangeMode::Manual,
+                range_mode: RangeMode::Auto,
                 electron_energy_e_v: input.electron_energy_e_v,
-                energy_min_e_v,
-                energy_max_e_v,
+                energy_min_e_v: 50.0,
+                energy_max_e_v: input.electron_energy_e_v,
                 points: 200,
                 spacing: Spacing::Log,
                 allow_extrapolate: input.allow_extrapolate,
@@ -275,9 +278,15 @@ impl AppState {
         }
     }
 
+    pub fn current_graph_input(&self) -> SweepInput {
+        let mut input = self.current_sweep_input();
+        input.points = input.points.max(GRAPH_MIN_POINTS);
+        input
+    }
+
     pub fn current_range(&self) -> (f64, f64) {
         match self.energy.range_mode {
-            RangeMode::Auto => (10.0, self.energy.energy_max_e_v),
+            RangeMode::Auto => (50.0, self.energy.energy_max_e_v),
             RangeMode::Manual => (self.energy.energy_min_e_v, self.energy.energy_max_e_v),
         }
     }
@@ -325,6 +334,11 @@ pub fn reduce(mut state: AppState, action: Action) -> AppState {
         Action::Backspace => {
             if state.mode == Mode::Editing {
                 backspace(&mut state);
+            }
+        }
+        Action::Delete => {
+            if state.mode == Mode::Editing {
+                delete_char(&mut state);
             }
         }
         Action::ConfirmOrEdit => confirm_or_edit(&mut state),
@@ -376,6 +390,10 @@ fn cycle_pane_or_commit_then_cycle(state: &mut AppState, direction: isize) {
 }
 
 fn move_horizontal(state: &mut AppState, direction: isize) {
+    if state.mode == Mode::Editing {
+        move_edit_cursor(state, direction);
+        return;
+    }
     if state.mode == Mode::Normal {
         match state.focused_pane {
             Pane::MaterialInput if state.selected_material_field == MaterialField::Preset => {
@@ -446,13 +464,43 @@ fn move_selection(state: &mut AppState, direction: isize) {
 }
 
 fn move_probe_energy_to_sweep_point(state: &mut AppState, direction: isize) {
+    let Some(graph) = &state.graph else {
+        return;
+    };
+    if graph.points_log10.is_empty() {
+        return;
+    }
+    let current_x = state.energy.electron_energy_e_v.log10();
+    let current = graph
+        .points_log10
+        .iter()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| {
+            let left_distance = (left.0 - current_x).abs();
+            let right_distance = (right.0 - current_x).abs();
+            left_distance.total_cmp(&right_distance)
+        })
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    let next = if direction < 0 {
+        current.saturating_sub(1)
+    } else {
+        current
+            .saturating_add(direction as usize)
+            .min(graph.points_log10.len().saturating_sub(1))
+    };
+    let electron_energy_e_v = 10_f64.powf(graph.points_log10[next].0);
+    state.energy.source = EnergySource::Custom;
+    state.energy.electron_energy_e_v = electron_energy_e_v;
+    sync_selected_row_to_probe_energy(state);
+    recalculate(state);
+}
+
+fn sync_selected_row_to_probe_energy(state: &mut AppState) {
     let Some(sweep) = &state.sweep else {
         return;
     };
-    if sweep.points.is_empty() {
-        return;
-    }
-    let current = sweep
+    if let Some(index) = sweep
         .points
         .iter()
         .enumerate()
@@ -463,18 +511,9 @@ fn move_probe_energy_to_sweep_point(state: &mut AppState, direction: isize) {
             left_distance.total_cmp(&right_distance)
         })
         .map(|(index, _)| index)
-        .unwrap_or(0);
-    let next = if direction < 0 {
-        current.saturating_sub(1)
-    } else {
-        current
-            .saturating_add(direction as usize)
-            .min(sweep.points.len().saturating_sub(1))
-    };
-    state.selected_row = next;
-    state.energy.source = EnergySource::Custom;
-    state.energy.electron_energy_e_v = sweep.points[next].electron_energy_e_v;
-    recalculate(state);
+    {
+        state.selected_row = index;
+    }
 }
 
 fn clear_current_field(state: &mut AppState) {
@@ -497,7 +536,7 @@ fn clear_current_field(state: &mut AppState) {
             }
             EnergyField::EnergyMin | EnergyField::EnergyMax => {
                 state.energy.range_mode = RangeMode::Manual;
-                state.energy.energy_min_e_v = 10.0;
+                state.energy.energy_min_e_v = 50.0;
                 state.energy.energy_max_e_v = state.energy.electron_energy_e_v;
             }
             _ => {}
@@ -775,6 +814,16 @@ fn backspace(state: &mut AppState) {
     state.edit_cursor -= 1;
 }
 
+fn delete_char(state: &mut AppState) {
+    let len = state.edit_buffer.chars().count();
+    if state.edit_cursor >= len {
+        return;
+    }
+    let start = byte_index_at_char(&state.edit_buffer, state.edit_cursor);
+    let end = byte_index_at_char(&state.edit_buffer, state.edit_cursor + 1);
+    state.edit_buffer.replace_range(start..end, "");
+}
+
 fn move_edit_cursor(state: &mut AppState, direction: isize) {
     let len = active_field_text(state).chars().count();
     if direction < 0 {
@@ -837,7 +886,7 @@ fn current_energy_source_label(state: &AppState) -> &str {
 
 fn apply_auto_range(state: &mut AppState) {
     if state.energy.range_mode == RangeMode::Auto {
-        state.energy.energy_min_e_v = 10.0;
+        state.energy.energy_min_e_v = 50.0;
         state.energy.energy_max_e_v = state.energy.electron_energy_e_v;
     }
 }
@@ -907,7 +956,7 @@ fn recalculate(state: &mut AppState) {
         }
     }
 
-    match tpp2m_core::log_plot_points(state.current_sweep_input()) {
+    match tpp2m_core::log_plot_points(state.current_graph_input()) {
         Ok(graph) => {
             append_warning_messages(state, &graph.warnings, "graph");
             state.graph = Some(graph);
@@ -1012,6 +1061,9 @@ mod tests {
     fn extrapolated_sweep_warnings_are_visible_in_messages() {
         let mut state = AppState::new(None, 10.0, 1000.0);
         state.energy.allow_extrapolate = true;
+        state.energy.range_mode = RangeMode::Manual;
+        state.energy.energy_min_e_v = 10.0;
+        state.energy.energy_max_e_v = 1000.0;
 
         let state = reduce(state, Action::Recalculate);
 
@@ -1086,7 +1138,7 @@ mod tests {
 
         let state = reduce(state, Action::ResetZoom);
         assert_eq!(state.energy.range_mode, RangeMode::Auto);
-        assert_eq!(state.energy.energy_min_e_v, 10.0);
+        assert_eq!(state.energy.energy_min_e_v, 50.0);
         assert_eq!(
             state.energy.energy_max_e_v,
             state.energy.electron_energy_e_v
@@ -1096,10 +1148,6 @@ mod tests {
     #[test]
     fn graph_hl_moves_electron_energy_marker_without_changing_auto_range() {
         let state = AppState::new(None, 50.0, 2000.0);
-        let state = reduce(state, Action::Focus(Pane::EnergySweep));
-        let state = reduce(state, Action::MoveDown);
-        let state = reduce(state, Action::MoveDown);
-        let state = reduce(state, Action::MoveRight);
         assert_eq!(state.energy.range_mode, RangeMode::Auto);
         let range_before = state.current_range();
 
@@ -1110,6 +1158,30 @@ mod tests {
         assert!(state.energy.electron_energy_e_v < energy_before);
         assert_eq!(state.current_range(), range_before);
         assert!(state.result.is_some());
+    }
+
+    #[test]
+    fn default_range_is_auto_and_graph_uses_higher_resolution_than_table() {
+        let state = AppState::new(None, 50.0, 2000.0);
+
+        assert_eq!(state.energy.range_mode, RangeMode::Auto);
+        assert_eq!(state.current_range(), (50.0, 1000.0));
+        assert_eq!(
+            state
+                .sweep
+                .as_ref()
+                .map(|sweep| sweep.points.len())
+                .unwrap_or_default(),
+            200
+        );
+        assert_eq!(
+            state
+                .graph
+                .as_ref()
+                .map(|graph| graph.points_log10.len())
+                .unwrap_or_default(),
+            GRAPH_MIN_POINTS
+        );
     }
 
     #[test]
@@ -1190,6 +1262,18 @@ mod tests {
     }
 
     #[test]
+    fn delete_removes_character_right_of_edit_cursor() {
+        let state = AppState::new(None, 50.0, 2000.0);
+        let state = reduce(state, Action::MoveDown);
+        let state = reduce(state, Action::MoveLeft);
+        let state = reduce(state, Action::StartInsertBefore);
+        let state = reduce(state, Action::Delete);
+        let state = reduce(state, Action::ConfirmOrEdit);
+
+        assert_eq!(state.material.material_name, "S");
+    }
+
+    #[test]
     fn tab_commits_edit_and_moves_pane() {
         let state = AppState::new(None, 50.0, 2000.0);
         let state = reduce(state, Action::MoveDown);
@@ -1214,9 +1298,8 @@ mod tests {
 
         let state = reduce(state, Action::MoveDown);
         let state = reduce(state, Action::MoveDown);
-        let state = reduce(state, Action::MoveRight);
         assert_eq!(state.energy.range_mode, RangeMode::Auto);
-        assert_eq!(state.energy.energy_min_e_v, 10.0);
+        assert_eq!(state.energy.energy_min_e_v, 50.0);
         assert_eq!(state.energy.energy_max_e_v, 1253.6);
     }
 
@@ -1233,6 +1316,6 @@ mod tests {
         let state = reduce(state, Action::ConfirmOrEdit);
 
         assert_eq!(state.energy.range_mode, RangeMode::Manual);
-        assert_eq!(state.energy.energy_min_e_v, 100.0);
+        assert_eq!(state.energy.energy_min_e_v, 500.0);
     }
 }
