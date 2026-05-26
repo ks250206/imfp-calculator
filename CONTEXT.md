@@ -30,7 +30,7 @@ UI層にTPP-2M式、係数計算、単位変換、スイープ生成を複製し
 - TUIでは `energy` ではなく `Electron energy` と表示する。
 - Electron energyには Al Kα、Mg Kα、Cr Kα、Ga Kα のプリセットを持つ。
 - スイープ範囲は `auto` / `manual` を持つ。`auto` は `10..=electron_energy_e_v`、`manual` はユーザー編集値を使う。
-- TUIのペイン移動は `Tab` / `Shift-Tab` と数字キーで行う。`h` / `l` は入力フィールド内カーソル移動またはpreset / enum候補切り替えに使い、ペイン移動には使わない。
+- TUIのペイン移動は `Tab` / `Shift-Tab` と数字キーで行う。Help/Logはフォーカス対象外にする。`h` / `l` は入力フィールド内カーソル移動、preset / enum候補切り替え、Graph上のElectron energyマーカー移動に使い、ペイン移動には使わない。
 - 材料プリセットはMVPでは単元素材料だけにする。化合物、有機化合物、ポリマーの組み込みプリセットは扱わない。
 - 単元素材料プリセットの `valence_electrons` はTPP-2M入力用の固定プリセット値であり、実行時に周期表の族番号や電子配置から自動推定しない。
 - 外部由来の表ファイルはリポジトリに含めない。必要ならローカル参照に留める。

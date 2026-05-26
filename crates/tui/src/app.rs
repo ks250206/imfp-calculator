@@ -12,32 +12,34 @@ pub enum Pane {
 }
 
 impl Pane {
-    pub const ORDER: [Self; 5] = [
+    pub const ORDER: [Self; 4] = [
         Self::MaterialInput,
         Self::EnergySweep,
-        Self::Graph,
         Self::ResultSeries,
-        Self::HelpLog,
+        Self::Graph,
     ];
 
     pub fn from_number(number: u8) -> Option<Self> {
         match number {
             1 => Some(Self::MaterialInput),
             2 => Some(Self::EnergySweep),
-            3 => Some(Self::Graph),
-            4 => Some(Self::ResultSeries),
-            5 => Some(Self::HelpLog),
+            3 => Some(Self::ResultSeries),
+            4 => Some(Self::Graph),
             _ => None,
         }
+    }
+
+    pub fn is_focusable(self) -> bool {
+        Self::ORDER.contains(&self)
     }
 
     pub fn title(self) -> &'static str {
         match self {
             Self::MaterialInput => "1 Material/Input",
             Self::EnergySweep => "2 Energy/Sweep",
-            Self::Graph => "3 IMFP log-log graph",
-            Self::ResultSeries => "4 Result/Series",
-            Self::HelpLog => "5 Help/Log",
+            Self::ResultSeries => "3 Result/Series",
+            Self::Graph => "4 IMFP log-log graph",
+            Self::HelpLog => "Help/Log",
         }
     }
 }
@@ -246,8 +248,12 @@ impl AppState {
     }
 
     pub fn current_input(&self) -> Tpp2mInput {
-        let allow_extrapolate =
-            self.energy.allow_extrapolate || self.energy.electron_energy_e_v > 2000.0;
+        let (energy_min_e_v, energy_max_e_v) = self.current_range();
+        let allow_extrapolate = self.energy.allow_extrapolate
+            || self.energy.electron_energy_e_v < 50.0
+            || self.energy.electron_energy_e_v > 2000.0
+            || energy_min_e_v < 50.0
+            || energy_max_e_v > 2000.0;
         Tpp2mInput {
             electron_energy_e_v: self.energy.electron_energy_e_v,
             density_g_cm3: self.material.density_g_cm3,
@@ -271,7 +277,7 @@ impl AppState {
 
     pub fn current_range(&self) -> (f64, f64) {
         match self.energy.range_mode {
-            RangeMode::Auto => (10.0, self.energy.electron_energy_e_v),
+            RangeMode::Auto => (10.0, self.energy.energy_max_e_v),
             RangeMode::Manual => (self.energy.energy_min_e_v, self.energy.energy_max_e_v),
         }
     }
@@ -280,7 +286,7 @@ impl AppState {
 pub fn reduce(mut state: AppState, action: Action) -> AppState {
     match action {
         Action::Focus(pane) => {
-            if state.mode == Mode::Normal {
+            if state.mode == Mode::Normal && pane.is_focusable() {
                 state.focused_pane = pane;
                 reset_cursor_for_current_field(&mut state);
             }
@@ -404,6 +410,10 @@ fn move_horizontal(state: &mut AppState, direction: isize) {
                 }
                 _ => {}
             },
+            Pane::Graph => {
+                move_probe_energy_to_sweep_point(state, direction);
+                return;
+            }
             _ => {}
         }
     }
@@ -433,6 +443,38 @@ fn move_selection(state: &mut AppState, direction: isize) {
     } else {
         state.selected_row = state.selected_row.saturating_sub(direction.unsigned_abs());
     }
+}
+
+fn move_probe_energy_to_sweep_point(state: &mut AppState, direction: isize) {
+    let Some(sweep) = &state.sweep else {
+        return;
+    };
+    if sweep.points.is_empty() {
+        return;
+    }
+    let current = sweep
+        .points
+        .iter()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| {
+            let left_distance = (left.electron_energy_e_v - state.energy.electron_energy_e_v).abs();
+            let right_distance =
+                (right.electron_energy_e_v - state.energy.electron_energy_e_v).abs();
+            left_distance.total_cmp(&right_distance)
+        })
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    let next = if direction < 0 {
+        current.saturating_sub(1)
+    } else {
+        current
+            .saturating_add(direction as usize)
+            .min(sweep.points.len().saturating_sub(1))
+    };
+    state.selected_row = next;
+    state.energy.source = EnergySource::Custom;
+    state.energy.electron_energy_e_v = sweep.points[next].electron_energy_e_v;
+    recalculate(state);
 }
 
 fn clear_current_field(state: &mut AppState) {
@@ -906,9 +948,11 @@ mod tests {
     fn number_focus_actions_move_to_matching_pane() {
         let state = AppState::new(None, 50.0, 2000.0);
 
-        let state = reduce(state, Action::Focus(Pane::HelpLog));
+        let state = reduce(state, Action::Focus(Pane::ResultSeries));
+        assert_eq!(state.focused_pane, Pane::ResultSeries);
 
-        assert_eq!(state.focused_pane, Pane::HelpLog);
+        let state = reduce(state, Action::Focus(Pane::HelpLog));
+        assert_eq!(state.focused_pane, Pane::ResultSeries);
     }
 
     #[test]
@@ -916,9 +960,15 @@ mod tests {
         let state = AppState::new(None, 50.0, 2000.0);
 
         let state = reduce(state, Action::NextPane);
-        let state = reduce(state, Action::PreviousPane);
-
+        assert_eq!(state.focused_pane, Pane::EnergySweep);
+        let state = reduce(state, Action::NextPane);
+        assert_eq!(state.focused_pane, Pane::ResultSeries);
+        let state = reduce(state, Action::NextPane);
+        assert_eq!(state.focused_pane, Pane::Graph);
+        let state = reduce(state, Action::NextPane);
         assert_eq!(state.focused_pane, Pane::MaterialInput);
+        let state = reduce(state, Action::PreviousPane);
+        assert_eq!(state.focused_pane, Pane::Graph);
     }
 
     #[test]
@@ -1041,6 +1091,25 @@ mod tests {
             state.energy.energy_max_e_v,
             state.energy.electron_energy_e_v
         );
+    }
+
+    #[test]
+    fn graph_hl_moves_electron_energy_marker_without_changing_auto_range() {
+        let state = AppState::new(None, 50.0, 2000.0);
+        let state = reduce(state, Action::Focus(Pane::EnergySweep));
+        let state = reduce(state, Action::MoveDown);
+        let state = reduce(state, Action::MoveDown);
+        let state = reduce(state, Action::MoveRight);
+        assert_eq!(state.energy.range_mode, RangeMode::Auto);
+        let range_before = state.current_range();
+
+        let state = reduce(state, Action::Focus(Pane::Graph));
+        let energy_before = state.energy.electron_energy_e_v;
+        let state = reduce(state, Action::MoveLeft);
+
+        assert!(state.energy.electron_energy_e_v < energy_before);
+        assert_eq!(state.current_range(), range_before);
+        assert!(state.result.is_some());
     }
 
     #[test]

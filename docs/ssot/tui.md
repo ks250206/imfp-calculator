@@ -25,19 +25,20 @@ tpp2m tui -r 2.3296 -M 28.0855 -v 4 -g 1.12 --energy-min 50 --energy-max 2000
 Lazygit風に、左側に操作・入力ペイン、右側に結果・グラフペインを配置する。
 
 ```text
-┌─ 1 Material/Input ─────────┬─ 3 IMFP log-log graph ─────────────────────┐
+┌─ 1 Material/Input ─────────┬─ 4 IMFP log-log graph ─────────────────────┐
 │ density                    │ y: IMFP / nm                               │
 │ molar mass                 │                                             │
 │ valence electrons          │                                             │
 │ band gap                   │                                             │
 ├─ 2 Energy/Sweep ───────────┤                                             │
-│ energy                     │                                             │
+│ Electron energy            │                                             │
+│ IMFP at Electron energy    │                                             │
 │ energy min/max             │                                             │
 │ points / spacing           │                                             │
-├─ 4 Result/Series ──────────┤                                             │
+├─ 3 Result/Series ──────────┤                                             │
 │ current IMFP               │ x: Electron Energy / eV                    │
 │ table row                  │                                             │
-├─ 5 Help/Log ───────────────┴─────────────────────────────────────────────┤
+├─ Help/Log ─────────────────┴─────────────────────────────────────────────┤
 │ messages, warnings, key hints                                             │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
@@ -50,9 +51,9 @@ Lazygit風に、左側に操作・入力ペイン、右側に結果・グラフ�
 |---:|---|---|
 | 1 | Material/Input | ρ, M, Nv, Egの編集。 |
 | 2 | Energy/Sweep | 単点E、スイープ範囲、点数、log/linearの編集。 |
-| 3 | IMFP log-log graph | 横軸Electron Energy/eV、縦軸IMFP/nmの両対数グラフ。 |
-| 4 | Result/Series | 単点結果とスイープ表。 |
-| 5 | Help/Log | キーヒント、警告、エラー、操作ログ。 |
+| 3 | Result/Series | 単点結果とスイープ表。 |
+| 4 | IMFP log-log graph | 横軸Electron Energy/eV、縦軸IMFP/nmの両対数グラフ。 |
+| - | Help/Log | キーヒント、警告、エラー、操作ログ。フォーカス対象ではない。 |
 
 ## フォーカス移動
 
@@ -62,11 +63,10 @@ Lazygit風に、左側に操作・入力ペイン、右側に結果・グラフ�
 |---|---|
 | `1` | Material/Inputへフォーカス。 |
 | `2` | Energy/Sweepへフォーカス。 |
-| `3` | Graphへフォーカス。 |
-| `4` | Result/Seriesへフォーカス。 |
-| `5` | Help/Logへフォーカス。 |
-| `Tab` | 次ペイン。入力ペイン内でも常にペイン移動。 |
-| `Shift-Tab` | 前ペイン。入力ペイン内でも常にペイン移動。 |
+| `3` | Result/Seriesへフォーカス。 |
+| `4` | Graphへフォーカス。 |
+| `Tab` | 次フォーカス可能ペイン。入力ペイン内でも常にペイン移動。Help/Logへは移動しない。 |
+| `Shift-Tab` | 前フォーカス可能ペイン。入力ペイン内でも常にペイン移動。Help/Logへは移動しない。 |
 
 ## Vim風操作
 
@@ -113,7 +113,7 @@ editable fieldでは、insert modeに入る前から端末カーソルを現在�
 
 | キー | 動作 |
 |---|---|
-| `h` / `l` | カーソルを前後のサンプル点へ移動。 |
+| `h` / `l` | Electron energyを前後のサンプル点へ移動し、単点IMFPと縦マーカーを更新する。 |
 | `j` / `k` | Y方向の読み取りカーソルを移動。MVPではサンプル点移動と同義でよい。 |
 | `+` / `-` | エネルギー範囲をズーム。 |
 | `0` | ズームを既定範囲に戻す。 |
@@ -129,6 +129,8 @@ editable fieldでは、insert modeに入る前から端末カーソルを現在�
 
 Result/Seriesはスイープの全pointを対象にする。端末に入りきらない場合は、固定幅列のテーブルとして選択行周辺を表示し、`j/k`, `gg`, `G`, `Ctrl-d`, `Ctrl-u` で全pointへ到達できるようにする。列幅は表示中の数値で伸縮させず、少なくとも `index`, `E / eV`, `IMFP / nm` を固定幅で表示する。
 
+Energy/Sweepペインにも、Electron energyにおける単点IMFP値を表示する。これはGraph seriesとは別に `core::calculate` で計算した値を表示する。
+
 ## グラフ仕様
 
 ### 軸
@@ -138,6 +140,7 @@ Result/Seriesはスイープの全pointを対象にする。端末に入りき�
 - 両軸とも対数表示。
 - Graphペインのプロット領域は端末テーマに依存せず白背景にする。
 - 軸、目盛、軸ラベルは黒系、seriesは赤系の大きめの点で描く。
+- Electron energyの位置は縦マーカーとして表示する。
 - 白背景はGraphペインに限定し、他ペインは通常のTUI表示を維持する。
 
 ### 実装

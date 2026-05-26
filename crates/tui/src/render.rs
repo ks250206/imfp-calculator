@@ -29,7 +29,7 @@ fn render_split(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(8),
-            Constraint::Length(10),
+            Constraint::Length(11),
             Constraint::Min(5),
             Constraint::Length(5),
         ])
@@ -52,7 +52,7 @@ fn render_stacked(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(8),
-            Constraint::Length(10),
+            Constraint::Length(11),
             Constraint::Length(10),
             Constraint::Min(7),
             Constraint::Length(5),
@@ -141,6 +141,7 @@ fn render_energy(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
             ),
             energy_field_value(state, EnergyField::ElectronEnergy)
         )),
+        Line::from(format!("  IMFP at energy: {}", single_imfp_label(state))),
         Line::from(format!(
             "{}range mode: {:?}",
             field_marker(
@@ -267,11 +268,12 @@ fn render_graph(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
         &graph.points_log10,
         &graph.x_axis_label,
         &graph.y_axis_label,
+        graph_marker(state),
     );
 }
 
 fn render_help(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
-    let text = "1-5 focus | hjkl move | gg/G bounds | / search | ? help | q quit";
+    let text = "1-4 focus | Tab panes | hjkl move | gg/G bounds | / search | ? help | q quit";
     frame.render_widget(
         Paragraph::new(text).block(block(Pane::HelpLog, state)),
         area,
@@ -341,6 +343,14 @@ fn energy_source_label(state: &AppState) -> &str {
         crate::app::EnergySource::Custom => "Custom",
         crate::app::EnergySource::Xray(index) => crate::presets::XRAY_PRESETS[index].label,
     }
+}
+
+fn single_imfp_label(state: &AppState) -> String {
+    state
+        .result
+        .as_ref()
+        .map(|result| format!("{} nm", format_float(result.imfp_nm)))
+        .unwrap_or_else(|| "unavailable".to_string())
 }
 
 fn material_field_value(state: &AppState, field: MaterialField) -> String {
@@ -419,9 +429,9 @@ fn edit_field_location(state: &AppState, pane: Pane) -> Option<(u16, u16)> {
         },
         Pane::EnergySweep => match state.selected_energy_field {
             EnergyField::ElectronEnergy => Some((1, 19)),
-            EnergyField::EnergyMin => Some((3, 13)),
-            EnergyField::EnergyMax => Some((4, 13)),
-            EnergyField::Points => Some((5, 10)),
+            EnergyField::EnergyMin => Some((4, 13)),
+            EnergyField::EnergyMax => Some((5, 13)),
+            EnergyField::Points => Some((6, 10)),
             _ => None,
         },
         _ => None,
@@ -485,6 +495,7 @@ fn draw_graph_buffer(
     points: &[(f64, f64)],
     x_axis_label: &str,
     y_axis_label: &str,
+    marker_x_log10: Option<f64>,
 ) {
     buffer.set_style(area, Style::default().fg(Color::Black).bg(Color::White));
     if area.width < 20 || area.height < 8 || points.len() < 2 {
@@ -514,7 +525,14 @@ fn draw_graph_buffer(
         x_axis_label,
         y_axis_label,
     );
+    if let Some(marker_x_log10) = marker_x_log10 {
+        draw_energy_marker(buffer, plot, x_bounds, marker_x_log10);
+    }
     draw_plot_series(buffer, plot, x_bounds, y_bounds, points);
+}
+
+fn graph_marker(state: &AppState) -> Option<f64> {
+    (state.energy.electron_energy_e_v > 0.0).then_some(state.energy.electron_energy_e_v.log10())
 }
 
 fn draw_plot_frame(buffer: &mut Buffer, plot: Rect) {
@@ -631,6 +649,17 @@ fn draw_plot_series(
     }
 }
 
+fn draw_energy_marker(buffer: &mut Buffer, plot: Rect, x_bounds: [f64; 2], x: f64) {
+    if x < x_bounds[0] || x > x_bounds[1] {
+        return;
+    }
+    let style = Style::default().fg(Color::Blue).bg(Color::White);
+    let col = x_to_col(x, x_bounds, plot);
+    for row in plot.y.saturating_add(1)..plot.bottom().saturating_sub(1) {
+        set_symbol(buffer, col, row, "│", style);
+    }
+}
+
 fn draw_large_dot(buffer: &mut Buffer, x: u16, y: u16, plot: Rect, style: Style) {
     for (dx, dy, symbol) in [(0_i16, 0_i16, "●"), (-1, 0, "●"), (1, 0, "●")] {
         let Some(px) = offset_u16(x, dx) else {
@@ -709,9 +738,8 @@ mod tests {
             vec![
                 "1 Material/Input",
                 "2 Energy/Sweep",
-                "3 IMFP log-log graph",
-                "4 Result/Series",
-                "5 Help/Log"
+                "3 Result/Series",
+                "4 IMFP log-log graph"
             ]
         );
     }
@@ -730,8 +758,10 @@ mod tests {
         let rendered = buffer_text(terminal.backend().buffer());
         assert!(rendered.contains("1 Material/Input"));
         assert!(rendered.contains("2 Energy/Sweep"));
-        assert!(rendered.contains("3 IMFP log-log graph"));
+        assert!(rendered.contains("4 IMFP log-log graph"));
+        assert!(rendered.contains("3 Result/Series"));
         assert!(rendered.contains("Electron energy"));
+        assert!(rendered.contains("IMFP at energy"));
         assert!(rendered.contains("range min"));
         assert_eq!(terminal.backend().buffer()[(50, 2)].bg, Color::White);
     }
@@ -747,6 +777,7 @@ mod tests {
             &points,
             "Electron Energy / eV",
             "IMFP / nm",
+            Some(2.2),
         );
 
         let rendered = buffer_text(&buffer);
@@ -761,6 +792,14 @@ mod tests {
                 .content()
                 .iter()
                 .filter(|cell| cell.fg == Color::Red)
+                .count()
+                > 0
+        );
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .filter(|cell| cell.fg == Color::Blue)
                 .count()
                 > 0
         );

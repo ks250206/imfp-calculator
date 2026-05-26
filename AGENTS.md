@@ -86,7 +86,7 @@ cargo llvm-cov --workspace --all-features --html
 
 - `ratatui` + `crossterm` を既定とする。
 - Lazygit風に複数ペインを常時表示する。
-- `1`〜`5` は必ずフォーカス移動に割り当てる。
+- 数字キーは `docs/ssot/tui.md` のフォーカス可能ペインに割り当てる。Help/Logのような非操作ペインはフォーカス対象にしない。
 - Vim風操作を提供する。最低限 `h/j/k/l`, `gg`, `G`, `Ctrl-u`, `Ctrl-d`, `/`, `?`, `q` を扱う。
 - グラフは横軸 `Electron Energy / eV`、縦軸 `IMFP / nm` の両対数表示とする。
 - グラフ描画は `core` が返す数値列を `log10` 変換して `ratatui` の描画座標に渡す。軸ラベルは元の物理単位で表示する。

@@ -30,9 +30,8 @@ pub fn map_key_event(event: KeyEvent, state: &mut KeyInputState, mode: Mode) -> 
     match event.code {
         KeyCode::Char('1') => Some(Action::Focus(Pane::MaterialInput)),
         KeyCode::Char('2') => Some(Action::Focus(Pane::EnergySweep)),
-        KeyCode::Char('3') => Some(Action::Focus(Pane::Graph)),
-        KeyCode::Char('4') => Some(Action::Focus(Pane::ResultSeries)),
-        KeyCode::Char('5') => Some(Action::Focus(Pane::HelpLog)),
+        KeyCode::Char('3') => Some(Action::Focus(Pane::ResultSeries)),
+        KeyCode::Char('4') => Some(Action::Focus(Pane::Graph)),
         KeyCode::Tab => Some(Action::NextPane),
         KeyCode::BackTab => Some(Action::PreviousPane),
         KeyCode::Char('h') if event.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -85,9 +84,13 @@ mod tests {
     fn maps_number_keys_to_focus_actions() {
         let mut state = KeyInputState::default();
 
-        let action = map_key_event(key(KeyCode::Char('4')), &mut state, Mode::Normal);
+        let action = map_key_event(key(KeyCode::Char('3')), &mut state, Mode::Normal);
 
         assert_eq!(action, Some(Action::Focus(Pane::ResultSeries)));
+        assert_eq!(
+            map_key_event(key(KeyCode::Char('5')), &mut state, Mode::Normal),
+            None
+        );
     }
 
     #[test]
