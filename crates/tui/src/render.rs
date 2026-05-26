@@ -1,12 +1,9 @@
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
-
-use plotters::coord::types::RangedCoordf64;
-use plotters::prelude::*;
-use plotters_ratatui_backend::widget_fn;
 
 use crate::app::{AppState, EnergyField, MaterialField, Mode, Pane};
 
@@ -235,11 +232,6 @@ fn render_graph(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
         );
         return;
     };
-    let points = graph.points_log10.clone();
-    let x_axis_label = graph.x_axis_label.clone();
-    let y_axis_label = graph.y_axis_label.clone();
-    let x_bounds = bounds(points.iter().map(|(x, _)| *x));
-    let y_bounds = bounds(points.iter().map(|(_, y)| *y));
     let outer = graph_block(state);
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
@@ -247,39 +239,13 @@ fn render_graph(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
         Block::default().style(Style::default().bg(Color::White)),
         inner,
     );
-    let widget = widget_fn(move |drawing_area| {
-        drawing_area.fill(&WHITE)?;
-        let mut chart = ChartBuilder::on(&drawing_area)
-            .margin(4)
-            .x_label_area_size(16)
-            .y_label_area_size(18)
-            .right_y_label_area_size(8)
-            .top_x_label_area_size(8)
-            .build_cartesian_2d(x_bounds[0]..x_bounds[1], y_bounds[0]..y_bounds[1])?;
-
-        chart
-            .configure_mesh()
-            .disable_mesh()
-            .axis_style(BLACK)
-            .label_style(("sans-serif", 10).into_font().color(&BLACK))
-            .axis_desc_style(("sans-serif", 10).into_font().color(&BLACK))
-            .x_desc(x_axis_label.clone())
-            .y_desc(y_axis_label.clone())
-            .x_labels(major_ticks(x_bounds).len().max(2))
-            .y_labels(major_ticks(y_bounds).len().max(2))
-            .x_label_formatter(&|value| superscript_tick(*value))
-            .y_label_formatter(&|value| superscript_tick(*value))
-            .draw()?;
-
-        draw_axis_ticks(&mut chart, x_bounds, y_bounds)?;
-        chart.draw_series(LineSeries::new(points.iter().copied(), &BLUE))?;
-        drawing_area.present()
-    });
-
-    frame.render_widget(widget, inner);
-    frame
-        .buffer_mut()
-        .set_style(inner, Style::default().bg(Color::White));
+    draw_graph_buffer(
+        frame.buffer_mut(),
+        inner,
+        &graph.points_log10,
+        &graph.x_axis_label,
+        &graph.y_axis_label,
+    );
 }
 
 fn render_help(frame: &mut Frame<'_>, state: &AppState, area: Rect) {
@@ -491,65 +457,257 @@ fn minor_ticks(bounds: [f64; 2]) -> Vec<f64> {
     ticks
 }
 
-fn draw_axis_ticks<DB: DrawingBackend>(
-    chart: &mut ChartContext<'_, DB, Cartesian2d<RangedCoordf64, RangedCoordf64>>,
-    x_bounds: [f64; 2],
-    y_bounds: [f64; 2],
-) -> Result<(), DrawingAreaErrorKind<DB::ErrorType>> {
-    let x_major_len = (y_bounds[1] - y_bounds[0]) * 0.035;
-    let x_minor_len = x_major_len * 0.55;
-    let y_major_len = (x_bounds[1] - x_bounds[0]) * 0.035;
-    let y_minor_len = y_major_len * 0.55;
+fn draw_graph_buffer(
+    buffer: &mut Buffer,
+    area: Rect,
+    points: &[(f64, f64)],
+    x_axis_label: &str,
+    y_axis_label: &str,
+) {
+    buffer.set_style(area, Style::default().fg(Color::Black).bg(Color::White));
+    if area.width < 20 || area.height < 8 || points.len() < 2 {
+        return;
+    }
+
+    let plot = Rect {
+        x: area.x.saturating_add(7),
+        y: area.y.saturating_add(2),
+        width: area.width.saturating_sub(10),
+        height: area.height.saturating_sub(5),
+    };
+    if plot.width < 8 || plot.height < 4 {
+        return;
+    }
+
+    let x_bounds = bounds(points.iter().map(|(x, _)| *x));
+    let y_bounds = bounds(points.iter().map(|(_, y)| *y));
+    draw_plot_frame(buffer, plot);
+    draw_plot_ticks(buffer, plot, x_bounds, y_bounds);
+    draw_plot_labels(
+        buffer,
+        area,
+        plot,
+        x_bounds,
+        y_bounds,
+        x_axis_label,
+        y_axis_label,
+    );
+    draw_plot_series(buffer, plot, x_bounds, y_bounds, points);
+}
+
+fn draw_plot_frame(buffer: &mut Buffer, plot: Rect) {
+    let style = Style::default().fg(Color::Black).bg(Color::White);
+    let left = plot.x;
+    let right = plot.right().saturating_sub(1);
+    let top = plot.y;
+    let bottom = plot.bottom().saturating_sub(1);
+
+    for x in left.saturating_add(1)..right {
+        set_symbol(buffer, x, top, "─", style);
+        set_symbol(buffer, x, bottom, "─", style);
+    }
+    for y in top.saturating_add(1)..bottom {
+        set_symbol(buffer, left, y, "│", style);
+        set_symbol(buffer, right, y, "│", style);
+    }
+    set_symbol(buffer, left, top, "┌", style);
+    set_symbol(buffer, right, top, "┐", style);
+    set_symbol(buffer, left, bottom, "└", style);
+    set_symbol(buffer, right, bottom, "┘", style);
+}
+
+fn draw_plot_ticks(buffer: &mut Buffer, plot: Rect, x_bounds: [f64; 2], y_bounds: [f64; 2]) {
+    let style = Style::default().fg(Color::Black).bg(Color::White);
+    let left = plot.x;
+    let right = plot.right().saturating_sub(1);
+    let top = plot.y;
+    let bottom = plot.bottom().saturating_sub(1);
 
     for x in minor_ticks(x_bounds) {
-        chart.draw_series([
-            PathElement::new(
-                vec![(x, y_bounds[0]), (x, y_bounds[0] + x_minor_len)],
-                BLACK,
-            ),
-            PathElement::new(
-                vec![(x, y_bounds[1]), (x, y_bounds[1] - x_minor_len)],
-                BLACK,
-            ),
-        ])?;
+        let col = x_to_col(x, x_bounds, plot);
+        set_symbol(buffer, col, top, "┬", style);
+        set_symbol(buffer, col, bottom, "┴", style);
     }
     for x in major_ticks(x_bounds) {
-        chart.draw_series([
-            PathElement::new(
-                vec![(x, y_bounds[0]), (x, y_bounds[0] + x_major_len)],
-                BLACK,
-            ),
-            PathElement::new(
-                vec![(x, y_bounds[1]), (x, y_bounds[1] - x_major_len)],
-                BLACK,
-            ),
-        ])?;
+        let col = x_to_col(x, x_bounds, plot);
+        set_symbol(buffer, col, top, "┬", style);
+        set_symbol(buffer, col, top.saturating_add(1), "│", style);
+        set_symbol(buffer, col, bottom, "┴", style);
+        set_symbol(buffer, col, bottom.saturating_sub(1), "│", style);
     }
+
     for y in minor_ticks(y_bounds) {
-        chart.draw_series([
-            PathElement::new(
-                vec![(x_bounds[0], y), (x_bounds[0] + y_minor_len, y)],
-                BLACK,
-            ),
-            PathElement::new(
-                vec![(x_bounds[1], y), (x_bounds[1] - y_minor_len, y)],
-                BLACK,
-            ),
-        ])?;
+        let row = y_to_row(y, y_bounds, plot);
+        set_symbol(buffer, left, row, "├", style);
+        set_symbol(buffer, right, row, "┤", style);
     }
     for y in major_ticks(y_bounds) {
-        chart.draw_series([
-            PathElement::new(
-                vec![(x_bounds[0], y), (x_bounds[0] + y_major_len, y)],
-                BLACK,
-            ),
-            PathElement::new(
-                vec![(x_bounds[1], y), (x_bounds[1] - y_major_len, y)],
-                BLACK,
-            ),
-        ])?;
+        let row = y_to_row(y, y_bounds, plot);
+        set_symbol(buffer, left, row, "├", style);
+        set_symbol(buffer, left.saturating_add(1), row, "─", style);
+        set_symbol(buffer, right, row, "┤", style);
+        set_symbol(buffer, right.saturating_sub(1), row, "─", style);
     }
-    Ok(())
+}
+
+fn draw_plot_labels(
+    buffer: &mut Buffer,
+    area: Rect,
+    plot: Rect,
+    x_bounds: [f64; 2],
+    y_bounds: [f64; 2],
+    x_axis_label: &str,
+    y_axis_label: &str,
+) {
+    let style = Style::default().fg(Color::Black).bg(Color::White);
+    let bottom = plot.bottom().saturating_sub(1);
+
+    for x in major_ticks(x_bounds) {
+        let label = superscript_tick(x);
+        let col = centered_label_x(x_to_col(x, x_bounds, plot), label.chars().count() as u16);
+        put_string(buffer, col, bottom.saturating_add(1), &label, style);
+    }
+    for y in major_ticks(y_bounds) {
+        let label = superscript_tick(y);
+        let row = y_to_row(y, y_bounds, plot);
+        let col = plot.x.saturating_sub(label.chars().count() as u16 + 1);
+        put_string(buffer, col, row, &label, style);
+    }
+
+    let x_label_x = centered_label_x(
+        plot.x.saturating_add(plot.width / 2),
+        x_axis_label.chars().count() as u16,
+    );
+    put_string(
+        buffer,
+        x_label_x,
+        area.bottom().saturating_sub(1),
+        x_axis_label,
+        style,
+    );
+    put_string(
+        buffer,
+        area.x.saturating_add(1),
+        plot.y.saturating_sub(1),
+        y_axis_label,
+        style,
+    );
+}
+
+fn draw_plot_series(
+    buffer: &mut Buffer,
+    plot: Rect,
+    x_bounds: [f64; 2],
+    y_bounds: [f64; 2],
+    points: &[(f64, f64)],
+) {
+    let style = Style::default().fg(Color::Red).bg(Color::White);
+    for pair in points.windows(2) {
+        let start = (
+            x_to_col(pair[0].0, x_bounds, plot),
+            y_to_row(pair[0].1, y_bounds, plot),
+        );
+        let end = (
+            x_to_col(pair[1].0, x_bounds, plot),
+            y_to_row(pair[1].1, y_bounds, plot),
+        );
+        draw_solid_line(buffer, start, end, style);
+    }
+}
+
+fn draw_solid_line(buffer: &mut Buffer, start: (u16, u16), end: (u16, u16), style: Style) {
+    let mut x0 = i32::from(start.0);
+    let mut y0 = i32::from(start.1);
+    let x1 = i32::from(end.0);
+    let y1 = i32::from(end.1);
+    let dx = (x1 - x0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let dy = -(y1 - y0).abs();
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+    let mut last_symbol = "─";
+
+    loop {
+        if x0 == x1 && y0 == y1 {
+            if x0 >= 0 && y0 >= 0 {
+                set_symbol(buffer, x0 as u16, y0 as u16, last_symbol, style);
+            }
+            break;
+        }
+
+        let previous = (x0, y0);
+        let e2 = err * 2;
+        if e2 >= dy {
+            err += dy;
+            x0 += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y0 += sy;
+        }
+        let next = (x0, y0);
+        last_symbol = line_step_symbol(previous, next);
+        if previous.0 >= 0 && previous.1 >= 0 {
+            set_symbol(
+                buffer,
+                previous.0 as u16,
+                previous.1 as u16,
+                last_symbol,
+                style,
+            );
+        }
+    }
+}
+
+fn line_step_symbol(start: (i32, i32), end: (i32, i32)) -> &'static str {
+    let dx = end.0 - start.0;
+    let dy = end.1 - start.1;
+    match (dx.signum(), dy.signum()) {
+        (_, 0) => "─",
+        (0, _) => "│",
+        (1, 1) | (-1, -1) => "╲",
+        (1, -1) | (-1, 1) => "╱",
+        _ => "─",
+    }
+}
+
+fn x_to_col(value: f64, bounds: [f64; 2], plot: Rect) -> u16 {
+    let span = (bounds[1] - bounds[0]).max(f64::EPSILON);
+    let t = ((value - bounds[0]) / span).clamp(0.0, 1.0);
+    plot.x
+        .saturating_add(1)
+        .saturating_add((t * f64::from(plot.width.saturating_sub(3))).round() as u16)
+}
+
+fn y_to_row(value: f64, bounds: [f64; 2], plot: Rect) -> u16 {
+    let span = (bounds[1] - bounds[0]).max(f64::EPSILON);
+    let t = ((value - bounds[0]) / span).clamp(0.0, 1.0);
+    plot.y
+        .saturating_add(1)
+        .saturating_add(((1.0 - t) * f64::from(plot.height.saturating_sub(3))).round() as u16)
+}
+
+fn centered_label_x(center: u16, width: u16) -> u16 {
+    center.saturating_sub(width / 2)
+}
+
+fn put_string(buffer: &mut Buffer, x: u16, y: u16, text: &str, style: Style) {
+    for (offset, ch) in text.chars().enumerate() {
+        set_symbol(
+            buffer,
+            x.saturating_add(offset as u16),
+            y,
+            &ch.to_string(),
+            style,
+        );
+    }
+}
+
+fn set_symbol(buffer: &mut Buffer, x: u16, y: u16, symbol: &str, style: Style) {
+    if x >= buffer.area().right() || y >= buffer.area().bottom() {
+        return;
+    }
+    buffer[(x, y)].set_symbol(symbol).set_style(style);
 }
 
 #[cfg(test)]
@@ -590,6 +748,37 @@ mod tests {
         assert!(rendered.contains("Electron energy"));
         assert!(rendered.contains("range min"));
         assert_eq!(terminal.backend().buffer()[(50, 2)].bg, Color::White);
+    }
+
+    #[test]
+    fn graph_uses_solid_black_axes_and_red_series_without_top_or_right_labels() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 24));
+        let points = vec![(1.0, -1.0), (1.6, -0.2), (2.2, 0.4), (3.0, 1.0)];
+
+        draw_graph_buffer(
+            &mut buffer,
+            Rect::new(0, 0, 80, 24),
+            &points,
+            "Electron Energy / eV",
+            "IMFP / nm",
+        );
+
+        let rendered = buffer_text(&buffer);
+        assert!(rendered.contains("┌"));
+        assert!(rendered.contains("┬"));
+        assert!(!rendered.contains('.'));
+        assert!(!rendered.contains('●'));
+        assert!(rendered.contains('╱') || rendered.contains('╲'));
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .filter(|cell| cell.fg == Color::Red)
+                .count()
+                > 0
+        );
+        assert!(!row_text(&buffer, 0).contains("Electron Energy / eV"));
+        assert!(!right_edge_text(&buffer, 16).contains("IMFP / nm"));
     }
 
     #[test]
@@ -635,5 +824,26 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>()
+    }
+
+    fn row_text(buffer: &ratatui::buffer::Buffer, y: u16) -> String {
+        (0..buffer.area().width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect::<String>()
+    }
+
+    fn right_edge_text(buffer: &ratatui::buffer::Buffer, width: u16) -> String {
+        let start = buffer.area().right().saturating_sub(width);
+        buffer
+            .content()
+            .chunks(buffer.area().width as usize)
+            .map(|row| {
+                row.iter()
+                    .skip(start as usize)
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }

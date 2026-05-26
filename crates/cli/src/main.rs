@@ -1,3 +1,4 @@
+use std::fs;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
@@ -23,6 +24,7 @@ struct Cli {
 enum Command {
     Calc(CalcArgs),
     Sweep(SweepArgs),
+    Plot(PlotArgs),
     Tui(TuiArgs),
 }
 
@@ -68,6 +70,26 @@ struct SweepArgs {
     json: bool,
     #[arg(long)]
     csv: bool,
+}
+
+#[derive(Debug, Parser)]
+struct PlotArgs {
+    #[command(flatten)]
+    material: MaterialArgs,
+    #[arg(long = "energy-min", default_value_t = 50.0)]
+    energy_min: f64,
+    #[arg(long = "energy-max", default_value_t = 2000.0)]
+    energy_max: f64,
+    #[arg(long, default_value_t = 1000)]
+    points: usize,
+    #[arg(long, value_enum, default_value_t = CliSpacing::Log)]
+    spacing: CliSpacing,
+    #[arg(long, short = 'o')]
+    output: String,
+    #[arg(long, default_value_t = 1280)]
+    width: u32,
+    #[arg(long, default_value_t = 720)]
+    height: u32,
 }
 
 #[derive(Debug, Parser)]
@@ -122,6 +144,7 @@ fn run(cli: Cli) -> Result<(), Tpp2mError> {
     match cli.command {
         Some(Command::Calc(args)) => run_calc(args, cli.verbose),
         Some(Command::Sweep(args)) => run_sweep(args),
+        Some(Command::Plot(args)) => run_plot(args),
         Some(Command::Tui(args)) => run_tui(args),
         None => run_tui(TuiArgs {
             material: None,
@@ -129,6 +152,20 @@ fn run(cli: Cli) -> Result<(), Tpp2mError> {
             energy_max: 2000.0,
         }),
     }
+}
+
+fn run_plot(args: PlotArgs) -> Result<(), Tpp2mError> {
+    let input = SweepInput {
+        material: args.material.to_input(1000.0),
+        energy_min_e_v: args.energy_min,
+        energy_max_e_v: args.energy_max,
+        points: args.points,
+        spacing: args.spacing.into(),
+    };
+    let graph = tpp2m_core::log_plot_points(input)?;
+    let svg = render_svg_plot(&graph, args.width, args.height);
+    fs::write(&args.output, svg).map_err(internal_error)?;
+    Ok(())
 }
 
 fn run_calc(args: CalcArgs, verbose: bool) -> Result<(), Tpp2mError> {
@@ -270,6 +307,175 @@ impl From<CliSpacing> for Spacing {
             CliSpacing::Linear => Self::Linear,
         }
     }
+}
+
+fn render_svg_plot(graph: &tpp2m_core::LogPlotData, width: u32, height: u32) -> String {
+    let width = width.max(360);
+    let height = height.max(240);
+    let margin_left = 120.0;
+    let margin_right = 64.0;
+    let margin_top = 56.0;
+    let margin_bottom = 96.0;
+    let plot_left = margin_left;
+    let plot_top = margin_top;
+    let plot_width = f64::from(width) - margin_left - margin_right;
+    let plot_height = f64::from(height) - margin_top - margin_bottom;
+    let x_bounds = bounds(graph.points_log10.iter().map(|(x, _)| *x));
+    let y_bounds = bounds(graph.points_log10.iter().map(|(_, y)| *y));
+
+    let mut svg = String::new();
+    svg.push_str(&format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">"#
+    ));
+    svg.push_str(r#"<rect width="100%" height="100%" fill="white"/>"#);
+    svg.push_str(r#"<g font-family="Arial, Helvetica, sans-serif" fill="black" stroke="black">"#);
+    svg.push_str(&format!(
+        r#"<rect x="{plot_left:.3}" y="{plot_top:.3}" width="{plot_width:.3}" height="{plot_height:.3}" fill="none" stroke-width="3"/>"#
+    ));
+
+    for x in minor_ticks(x_bounds) {
+        let px = svg_x(x, x_bounds, plot_left, plot_width);
+        svg.push_str(&format!(
+            r#"<line x1="{px:.3}" y1="{plot_top:.3}" x2="{px:.3}" y2="{:.3}" stroke-width="2"/>"#,
+            plot_top + 14.0
+        ));
+        svg.push_str(&format!(
+            r#"<line x1="{px:.3}" y1="{:.3}" x2="{px:.3}" y2="{:.3}" stroke-width="2"/>"#,
+            plot_top + plot_height,
+            plot_top + plot_height - 14.0
+        ));
+    }
+    for x in major_ticks(x_bounds) {
+        let px = svg_x(x, x_bounds, plot_left, plot_width);
+        svg.push_str(&format!(
+            r#"<line x1="{px:.3}" y1="{plot_top:.3}" x2="{px:.3}" y2="{:.3}" stroke-width="3"/>"#,
+            plot_top + 24.0
+        ));
+        svg.push_str(&format!(
+            r#"<line x1="{px:.3}" y1="{:.3}" x2="{px:.3}" y2="{:.3}" stroke-width="3"/>"#,
+            plot_top + plot_height,
+            plot_top + plot_height - 24.0
+        ));
+        svg.push_str(&format!(
+            r#"<text x="{px:.3}" y="{:.3}" font-size="42" text-anchor="middle" dominant-baseline="hanging">{}</text>"#,
+            plot_top + plot_height + 18.0,
+            svg_tick_label(x)
+        ));
+    }
+    for y in minor_ticks(y_bounds) {
+        let py = svg_y(y, y_bounds, plot_top, plot_height);
+        svg.push_str(&format!(
+            r#"<line x1="{plot_left:.3}" y1="{py:.3}" x2="{:.3}" y2="{py:.3}" stroke-width="2"/>"#,
+            plot_left + 14.0
+        ));
+        svg.push_str(&format!(
+            r#"<line x1="{:.3}" y1="{py:.3}" x2="{:.3}" y2="{py:.3}" stroke-width="2"/>"#,
+            plot_left + plot_width,
+            plot_left + plot_width - 14.0
+        ));
+    }
+    for y in major_ticks(y_bounds) {
+        let py = svg_y(y, y_bounds, plot_top, plot_height);
+        svg.push_str(&format!(
+            r#"<line x1="{plot_left:.3}" y1="{py:.3}" x2="{:.3}" y2="{py:.3}" stroke-width="3"/>"#,
+            plot_left + 24.0
+        ));
+        svg.push_str(&format!(
+            r#"<line x1="{:.3}" y1="{py:.3}" x2="{:.3}" y2="{py:.3}" stroke-width="3"/>"#,
+            plot_left + plot_width,
+            plot_left + plot_width - 24.0
+        ));
+        svg.push_str(&format!(
+            r#"<text x="{:.3}" y="{py:.3}" font-size="42" text-anchor="end" dominant-baseline="middle">{}</text>"#,
+            plot_left - 24.0,
+            svg_tick_label(y)
+        ));
+    }
+
+    let points = graph
+        .points_log10
+        .iter()
+        .map(|(x, y)| {
+            format!(
+                "{:.3},{:.3}",
+                svg_x(*x, x_bounds, plot_left, plot_width),
+                svg_y(*y, y_bounds, plot_top, plot_height)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    svg.push_str(&format!(
+        r#"<polyline points="{points}" fill="none" stroke="red" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>"#
+    ));
+    svg.push_str(&format!(
+        r#"<text x="{:.3}" y="{:.3}" font-size="48" text-anchor="middle">{}</text>"#,
+        plot_left + plot_width / 2.0,
+        f64::from(height) - 24.0,
+        escape_xml(&graph.x_axis_label.replace(" / ", " (").replace("eV", "eV)"))
+    ));
+    svg.push_str(&format!(
+        r#"<text x="48" y="{:.3}" font-size="48" text-anchor="middle" transform="rotate(-90 48 {:.3})">{}</text>"#,
+        plot_top + plot_height / 2.0,
+        plot_top + plot_height / 2.0,
+        escape_xml(&graph.y_axis_label.replace(" / ", " (").replace("nm", "nm)"))
+    ));
+    svg.push_str("</g></svg>\n");
+    svg
+}
+
+fn bounds(values: impl Iterator<Item = f64>) -> [f64; 2] {
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    for value in values {
+        min = min.min(value);
+        max = max.max(value);
+    }
+    if min.is_finite() && max.is_finite() && min < max {
+        [min, max]
+    } else {
+        [0.0, 1.0]
+    }
+}
+
+fn svg_x(value: f64, bounds: [f64; 2], plot_left: f64, plot_width: f64) -> f64 {
+    plot_left + ((value - bounds[0]) / (bounds[1] - bounds[0])).clamp(0.0, 1.0) * plot_width
+}
+
+fn svg_y(value: f64, bounds: [f64; 2], plot_top: f64, plot_height: f64) -> f64 {
+    plot_top + (1.0 - ((value - bounds[0]) / (bounds[1] - bounds[0])).clamp(0.0, 1.0)) * plot_height
+}
+
+fn major_ticks(bounds: [f64; 2]) -> Vec<f64> {
+    let start = bounds[0].ceil() as i32;
+    let end = bounds[1].floor() as i32;
+    (start..=end).map(f64::from).collect()
+}
+
+fn minor_ticks(bounds: [f64; 2]) -> Vec<f64> {
+    let start = bounds[0].floor() as i32;
+    let end = bounds[1].ceil() as i32;
+    let mut ticks = Vec::new();
+    for power in start..=end {
+        for multiplier in 2..10 {
+            let tick = f64::from(power) + f64::from(multiplier).log10();
+            if tick > bounds[0] && tick < bounds[1] {
+                ticks.push(tick);
+            }
+        }
+    }
+    ticks
+}
+
+fn svg_tick_label(value: f64) -> String {
+    let power = value.round() as i32;
+    format!(r#"10<tspan baseline-shift="super" font-size="65%">{power}</tspan>"#)
+}
+
+fn escape_xml(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 #[cfg(test)]

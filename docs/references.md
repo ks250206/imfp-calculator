@@ -16,8 +16,6 @@
 
 - Ratatui API documentation — https://docs.rs/ratatui/latest/ratatui/
 - Ratatui website — https://ratatui.rs/
-- plotters-ratatui-backend — https://docs.rs/plotters-ratatui-backend
-- Plotters — https://docs.rs/plotters
 
 ## Element presets
 

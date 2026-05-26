@@ -56,6 +56,7 @@ MVPの既定では `50 eV <= E <= 2000 eV` を推奨範囲とする。
 
 - `allow_extrapolate = false` の場合、範囲外は `OutOfRecommendedRange` エラーにする。
 - `allow_extrapolate = true` の場合、計算は行い `warnings` に範囲外警告を入れる。
+- `allow_extrapolate = true` の結果はTPP-2M式の機械的な外挿であり、`50 eV` 未満の低エネルギー領域で一般に知られるIMFP増大傾向を保証しない。
 
 この範囲はプロジェクト既定であり、将来の論文・検証に基づきADR付きで変更できる。
 

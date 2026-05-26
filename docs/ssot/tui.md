@@ -128,16 +128,14 @@ inline編集中は、端末カーソルを現在の入力位置に表示する�
 - 縦軸: `IMFP / nm`
 - 両軸とも対数表示。
 - Graphペインのプロット領域は端末テーマに依存せず白背景にする。
-- 軸、目盛、軸ラベルは黒系、プロット線は青系で描く。
+- 軸、目盛、軸ラベルは黒系、プロット線は赤系で描く。
 - 白背景はGraphペインに限定し、他ペインは通常のTUI表示を維持する。
 
 ### 実装
 
-Graphペインの描画は `plotters-ratatui-backend` + Plottersを第一候補として実装する。標準の `ratatui::widgets::Chart` だけでは、minor tick、内向きtick、上軸・右軸ミラーリング、白背景プロット領域の制御が不足しやすいためである。
+Graphペインの描画は、`ratatui` のbufferへ直接描画する。標準の `ratatui::widgets::Chart` やCanvas系バックエンドでは、solid line、minor tick、内向きtick、上軸・右軸ミラーリング、白背景プロット領域の制御が不足しやすいためである。
 
-Plotters標準meshで不足する軸要素は、Plotters上に追加要素として手描きする。
-
-Plottersに渡す座標は `core` が生成した `log10` 座標を使う。
+描画座標は `core` が生成した `log10` 座標を使う。
 
 ```text
 x = log10(Electron Energy / eV)
@@ -157,9 +155,9 @@ y_tick: value_log10 = 0.0, label = "10⁰"
 
 X軸、Y軸とも、major tickは10の整数冪で表示する。ラベルは `10⁰`, `10¹`, `10²` のように、指数を上付き文字で表示し、`^` 記号は使わない。
 
-minor tickは各decade内に表示する。major tickとminor tickはいずれもプロット領域の内向きに描く。
+minor tickは各decade内に表示する。major tickとminor tickはいずれもプロット領域の内向きに描く。枠線、tick、プロット線は点線ではなく実線で描く。
 
-右軸と上軸は、それぞれ左軸と下軸をミラーリングする。右軸と上軸にもtickとminor tickを表示するが、軸ラベルは左軸と下軸を主とする。
+右軸と上軸は、それぞれ左軸と下軸をミラーリングする。右軸と上軸にもtickとminor tickを表示するが、軸ラベルとtickラベルは表示しない。
 
 ### 既定値
 
@@ -260,6 +258,6 @@ fn reduce(state: AppState, action: Action) -> AppState;
 ## 受け入れ条件
 
 - TUIのスクリーンショットまたはsnapshotで、5ペイン構成が確認できる。
-- Graphペインのsnapshotまたはスクリーンショットで、白背景、黒系の軸・目盛・軸ラベル、青系のプロット線、上軸・右軸ミラーリング、major/minor tickが確認できる。
+- Graphペインのsnapshotまたはスクリーンショットで、白背景、黒系の軸・目盛・軸ラベル、赤系の実線プロット、上軸・右軸ミラーリング、major/minor tickが確認できる。
 - 主要キー操作は端末実機なしに reducer テストで検証できる。
 - 目視だけに依存した受け入れをしない。

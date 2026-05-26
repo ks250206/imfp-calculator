@@ -7,8 +7,6 @@ license.workspace = true
 [dependencies]
 crossterm.workspace = true
 periodic-table-on-an-enum.workspace = true
-plotters.workspace = true
-plotters-ratatui-backend.workspace = true
 ratatui.workspace = true
 tpp2m-core = { path = "../core" }
 

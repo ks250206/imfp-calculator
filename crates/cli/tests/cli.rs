@@ -130,6 +130,50 @@ fn sweep_json_contains_points_and_input() {
 }
 
 #[test]
+fn plot_writes_smooth_svg_polyline() {
+    let output_path = std::env::temp_dir().join(format!(
+        "tpp2m-plot-{}-{}.svg",
+        std::process::id(),
+        unique_suffix()
+    ));
+    let mut command = Command::cargo_bin("tpp2m").unwrap();
+
+    command
+        .args([
+            "plot",
+            "--energy-min",
+            "50",
+            "--energy-max",
+            "2000",
+            "--points",
+            "32",
+            "--spacing",
+            "log",
+            "-r",
+            "2.3296",
+            "-M",
+            "28.0855",
+            "-v",
+            "4",
+            "-g",
+            "1.12",
+            "-o",
+            output_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let svg = std::fs::read_to_string(&output_path).unwrap();
+    let _ = std::fs::remove_file(&output_path);
+
+    assert!(svg.contains("<svg"));
+    assert!(svg.contains("<polyline"));
+    assert!(svg.contains(r#"stroke="red""#));
+    assert!(svg.contains(r#"stroke-linejoin="round""#));
+    assert!(svg.contains("Electron Energy (eV)"));
+}
+
+#[test]
 fn extrapolation_flag_allows_out_of_range_calc() {
     let mut command = Command::cargo_bin("tpp2m").unwrap();
 
@@ -175,4 +219,11 @@ fn out_of_range_requires_extrapolation_flag() {
         .assert()
         .code(1)
         .stderr(predicate::str::contains("OutOfRecommendedRange"));
+}
+
+fn unique_suffix() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
 }

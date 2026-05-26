@@ -19,6 +19,7 @@ tpp2m [GLOBAL OPTIONS] <COMMAND>
 Commands:
   calc    単点IMFP計算
   sweep   エネルギースイープ計算
+  plot    エネルギースイープを滑らかなSVG図として出力
   tui     Lazygit風TUIを起動
   help    ヘルプ
 ```
@@ -157,6 +158,35 @@ tpp2m tui --density 2.3296 --molar-mass 28.0855 --valence-electrons 4 --band-gap
 
 CLI引数はTUIの初期状態として使う。TUIの詳細は `docs/ssot/tui.md` を正とする。
 
+## `plot`
+
+TUIの文字セル描画ではアンチエイリアス付きの滑らかな実線は表現できない。印刷・資料・論文ノート向けの滑らかな図は `plot` でSVGとして出力する。
+
+```bash
+tpp2m plot \
+  --energy-min 50 \
+  --energy-max 2000 \
+  --points 1000 \
+  --spacing log \
+  --density 2.3296 \
+  --molar-mass 28.0855 \
+  --valence-electrons 4 \
+  --band-gap 1.12 \
+  --output imfp.svg
+```
+
+### オプション
+
+`sweep` の材料パラメータとスイープパラメータに加えて以下を受け付ける。
+
+| オプション | 必須 | 値 | 既定 |
+|---|---:|---|---:|
+| `--output`, `-o` | yes | path | - |
+| `--width` | no | px | 1280 |
+| `--height` | no | px | 720 |
+
+SVGは白背景、黒い軸・major/minor tick、赤いseries lineを持つ。上軸・右軸はtickのみをミラーし、軸ラベルとtickラベルは表示しない。
+
 ## 終了コード
 
 | コード | 意味 |
@@ -172,6 +202,7 @@ CLI引数はTUIの初期状態として使う。TUIの詳細は `docs/ssot/tui.m
 
 - `calc` のJSON出力が `calculation.md` のテストベクトルと一致する。
 - `sweep` のCSV列順が固定される。
+- `plot` がSVGを生成し、赤いpolyline seriesを含む。
 - 範囲外入力は `--allow-extrapolate` なしでエラーになる。
 - `--allow-extrapolate` ありでは警告を出して成功する。
 - `COMMAND` なしはTUI起動パスに入る。ただし自動テストではTUI runnerを直接起動せず、起動判定関数をテストする。

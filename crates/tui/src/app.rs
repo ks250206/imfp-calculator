@@ -1,4 +1,4 @@
-use tpp2m_core::{LogPlotData, Spacing, SweepInput, SweepOutput, Tpp2mInput, Tpp2mOutput};
+use tpp2m_core::{LogPlotData, Spacing, SweepInput, SweepOutput, Tpp2mInput, Tpp2mOutput, Warning};
 
 use crate::presets::{MaterialPreset, XRAY_PRESETS, element_presets};
 
@@ -757,12 +757,7 @@ fn recalculate(state: &mut AppState) {
     state.messages.clear();
     match tpp2m_core::calculate(state.current_input()) {
         Ok(result) => {
-            for warning in &result.warnings {
-                state.messages.push(Message {
-                    level: MessageLevel::Warning,
-                    text: warning.message.clone(),
-                });
-            }
+            append_warning_messages(state, &result.warnings, "calculation");
             state.result = Some(result);
         }
         Err(error) => {
@@ -775,7 +770,10 @@ fn recalculate(state: &mut AppState) {
     }
 
     match tpp2m_core::sweep(state.current_sweep_input()) {
-        Ok(sweep) => state.sweep = Some(sweep),
+        Ok(sweep) => {
+            append_warning_messages(state, &sweep.warnings, "sweep");
+            state.sweep = Some(sweep);
+        }
         Err(error) => {
             state.sweep = None;
             state.messages.push(Message {
@@ -786,7 +784,10 @@ fn recalculate(state: &mut AppState) {
     }
 
     match tpp2m_core::log_plot_points(state.current_sweep_input()) {
-        Ok(graph) => state.graph = Some(graph),
+        Ok(graph) => {
+            append_warning_messages(state, &graph.warnings, "graph");
+            state.graph = Some(graph);
+        }
         Err(error) => {
             state.graph = None;
             state.messages.push(Message {
@@ -794,6 +795,24 @@ fn recalculate(state: &mut AppState) {
                 text: error.message,
             });
         }
+    }
+}
+
+fn append_warning_messages(state: &mut AppState, warnings: &[Warning], context: &str) {
+    if warnings.is_empty() {
+        return;
+    }
+    let first = &warnings[0].message;
+    let text = if warnings.len() == 1 {
+        format!("{context}: {first}")
+    } else {
+        format!("{context}: {first} ({} points)", warnings.len())
+    };
+    if !state.messages.iter().any(|message| message.text == text) {
+        state.messages.push(Message {
+            level: MessageLevel::Warning,
+            text,
+        });
     }
 }
 
@@ -854,6 +873,22 @@ mod tests {
         assert!(state.result.is_none());
         assert!(state.messages.iter().any(|message| {
             message.level == MessageLevel::Error && message.text.contains("density_g_cm3")
+        }));
+    }
+
+    #[test]
+    fn extrapolated_sweep_warnings_are_visible_in_messages() {
+        let mut state = AppState::new(None, 10.0, 1000.0);
+        state.energy.allow_extrapolate = true;
+
+        let state = reduce(state, Action::Recalculate);
+
+        assert!(state.sweep.is_some());
+        assert!(state.messages.iter().any(|message| {
+            message.level == MessageLevel::Warning
+                && message
+                    .text
+                    .contains("outside the recommended 50..=2000 eV range")
         }));
     }
 
